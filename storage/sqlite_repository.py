@@ -374,6 +374,18 @@ class SqliteRepository:
                 _dt_to_str(match.matched_at),
             ))
 
+    def list_child_matches(self, video_id: str) -> list[ChildMatch]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM child_match WHERE video_id = ? ORDER BY temp_child_id",
+                (video_id,),
+            ).fetchall()
+        return [ChildMatch(
+            id=r["id"], video_id=r["video_id"],
+            temp_child_id=r["temp_child_id"], pseudonym_id=r["pseudonym_id"],
+            matched_by=r["matched_by"], matched_at=_str_to_dt(r["matched_at"]),
+        ) for r in rows]
+
     # ------------------------------------------------------------------
     # FinalRecord
     # ------------------------------------------------------------------

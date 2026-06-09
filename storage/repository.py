@@ -111,6 +111,10 @@ class Repository(Protocol):
         """임시 ID ↔ 가명 ID 매칭을 저장한다. 동일 (video_id, temp_child_id) 는 덮어쓴다."""
         ...
 
+    def list_child_matches(self, video_id: str) -> list[ChildMatch]:
+        """video_id 에 속한 임시 ID ↔ 가명 ID 매칭 목록을 반환한다."""
+        ...
+
     # ------------------------------------------------------------------
     # FinalRecord
     # ------------------------------------------------------------------
