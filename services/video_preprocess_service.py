@@ -6,6 +6,8 @@
 - PySceneDetect 없거나 실패하면 고정 간격 fallback.
 - OpenCV 없으면 프레임 추출 자체가 불가(ImportError 전파).
 - 전처리 시작/완료를 video status 와 audit_log 에 기록한다.
+- 각 scene에서 모든 프레임이 blur_threshold 미만이면
+  blur_score 최고 프레임을 fallback으로 kept=True 처리한다.
 """
 
 from __future__ import annotations
@@ -15,9 +17,9 @@ from datetime import datetime
 from pathlib import Path
 
 from core.config import (
-    BLUR_THRESHOLD,
     DEFAULT_ACTOR,
     FALLBACK_SCENE_INTERVAL_SEC,
+    FRAME_BLUR_THRESHOLD,
     FRAMES_DIR,
 )
 from core.schemas import AuditLog, Frame, Scene, Video
@@ -32,7 +34,7 @@ def preprocess_video(
     video_id: str,
     repo: SqliteRepository,
     frames_dir: str = FRAMES_DIR,
-    blur_threshold: float = BLUR_THRESHOLD,
+    blur_threshold: float = FRAME_BLUR_THRESHOLD,
     actor: str = DEFAULT_ACTOR,
 ) -> tuple[list[Scene], list[Frame]]:
     """
@@ -44,7 +46,6 @@ def preprocess_video(
     if video is None:
         raise ValueError(f"video_id={video_id} 를 찾을 수 없습니다.")
 
-    # 상태: analyzing
     repo.save_video(video.model_copy(update={"status": "analyzing"}))
 
     scenes = split_video_into_scenes(video)
@@ -53,7 +54,6 @@ def preprocess_video(
     frames = extract_representative_frames(video, scenes, frames_dir, blur_threshold)
     repo.add_frames(frames)
 
-    # 상태: analyzed
     repo.save_video(video.model_copy(update={"status": "analyzed"}))
 
     repo.write_audit(AuditLog(
@@ -87,7 +87,6 @@ def split_video_into_scenes(
     """
     duration = _get_duration(video)
     if duration <= 0:
-        # duration 불명 → fallback
         return _fallback_scenes(video, fallback_interval_sec)
 
     try:
@@ -108,7 +107,7 @@ def _scenedetect_split(video: Video, duration: float) -> list[Scene]:
     manager = SceneManager()
     manager.add_detector(ContentDetector())
     manager.detect_scenes(video=video_stream)
-    raw = manager.get_scene_list()  # list[(FrameTimecode, FrameTimecode)]
+    raw = manager.get_scene_list()
 
     if not raw:
         return []
@@ -148,7 +147,6 @@ def _fallback_scenes(video: Video, interval_sec: float) -> list[Scene]:
     while t < duration:
         t_end = min(t + interval_sec, duration)
         if t_end - t < 0.5:
-            # 마지막 잔여 구간이 너무 짧으면 앞 scene 에 병합
             if scenes:
                 last = scenes[-1]
                 scenes[-1] = Scene(
@@ -179,13 +177,15 @@ def extract_representative_frames(
     video: Video,
     scenes: list[Scene],
     frames_dir: str = FRAMES_DIR,
-    blur_threshold: float = BLUR_THRESHOLD,
+    blur_threshold: float = FRAME_BLUR_THRESHOLD,
 ) -> list[Frame]:
     """
     각 scene 에서 대표 프레임을 추출하고 jpg 로 저장한다.
     - scene 길이 < 10s: 중간 1장
-    - scene 길이>= 10s: 시작/중간/끝 3장
+    - scene 길이 >= 10s: 시작/중간/끝 3장
     blur_score(Laplacian 분산) 계산 후 threshold 이상이면 kept=True.
+    scene 내 모든 프레임이 threshold 미만이면 blur_score 최고 프레임을
+    fallback으로 kept=True 처리한다. (blur_score 값 자체는 유지)
     """
     import cv2  # type: ignore
 
@@ -193,7 +193,6 @@ def extract_representative_frames(
     if not cap.isOpened():
         raise RuntimeError(f"영상을 열 수 없습니다: {video.stored_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frames: list[Frame] = []
 
     for scene in scenes:
@@ -201,6 +200,7 @@ def extract_representative_frames(
         scene_dir = Path(frames_dir) / video.id / scene.id
         scene_dir.mkdir(parents=True, exist_ok=True)
 
+        scene_frames: list[Frame] = []
         for frm_idx, t in enumerate(target_times):
             frame_id = f"frm_{scene.id}_{frm_idx:03d}"
             image_path = str(scene_dir / f"frm_{frm_idx:03d}.jpg")
@@ -214,7 +214,7 @@ def extract_representative_frames(
             blur_score = _laplacian_blur_score(img)
             kept = blur_score >= blur_threshold
 
-            frames.append(Frame(
+            scene_frames.append(Frame(
                 id=frame_id,
                 scene_id=scene.id,
                 t=round(t, 3),
@@ -222,6 +222,16 @@ def extract_representative_frames(
                 blur_score=round(blur_score, 2),
                 kept=kept,
             ))
+
+        # scene 내 모든 프레임이 threshold 미만이면 최고 blur_score 프레임을 fallback 선택
+        if scene_frames and not any(f.kept for f in scene_frames):
+            best = max(scene_frames, key=lambda f: f.blur_score)
+            scene_frames = [
+                f.model_copy(update={"kept": True}) if f.id == best.id else f
+                for f in scene_frames
+            ]
+
+        frames.extend(scene_frames)
 
     cap.release()
     return frames
@@ -232,7 +242,6 @@ def _sample_times(scene: Scene) -> list[float]:
     duration = scene.time_end - scene.time_start
     mid = scene.time_start + duration / 2.0
     if duration >= 10.0:
-        # 시작(+0.1s) / 중간 / 끝(-0.1s)
         return [
             scene.time_start + 0.1,
             mid,

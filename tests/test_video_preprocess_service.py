@@ -25,6 +25,7 @@ from services.video_preprocess_service import (
     preprocess_video,
     split_video_into_scenes,
 )
+from core.config import FRAME_BLUR_THRESHOLD
 from core.schemas import Video
 from storage.sqlite_repository import SqliteRepository
 
@@ -201,3 +202,35 @@ def test_fallback_scene_split(video_obj: Video):
         assert sc.time_end > sc.time_start
         assert sc.video_id == video_obj.id
         assert sc.detector == "fallback_fixed"
+
+
+# ---------------------------------------------------------------------------
+# 8. 모든 프레임이 threshold 미만이어도 scene당 최소 1개 kept=True 보장
+# ---------------------------------------------------------------------------
+
+def test_fallback_kept_when_all_below_threshold(tmp_path: Path, repo: SqliteRepository, video_obj: Video):
+    """blur_threshold 를 극단값으로 올려도 scene당 최소 1개 kept=True 여야 한다."""
+    frames_dir = str(tmp_path / "frames")
+    _, frames = preprocess_video(
+        video_id=video_obj.id,
+        repo=repo,
+        frames_dir=frames_dir,
+        blur_threshold=999_999.0,  # 어떤 프레임도 통과하지 못하는 값
+        actor="test_actor",
+    )
+    # 전체에서 kept=True 가 1개 이상이어야 한다
+    kept_frames = [f for f in frames if f.kept]
+    assert len(kept_frames) >= 1, "fallback: 전체에 최소 1개 이상 kept=True 이어야 한다"
+
+    # 각 scene에서 최소 1개 kept=True
+    scenes = repo.list_scenes(video_obj.id)
+    for scene in scenes:
+        scene_frames = [f for f in frames if f.scene_id == scene.id]
+        if scene_frames:  # 프레임이 추출된 scene에만 적용
+            assert any(f.kept for f in scene_frames), (
+                f"scene {scene.id}: 최소 1개 kept=True 이어야 한다 (fallback)"
+            )
+
+    # blur_score 값은 그대로 유지되어야 한다 (fallback이 score를 바꾸지 않음)
+    for f in kept_frames:
+        assert f.blur_score >= 0.0
