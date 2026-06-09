@@ -157,7 +157,9 @@ class SqliteRepository:
             decision             TEXT NOT NULL,
             edited               INTEGER NOT NULL DEFAULT 0,
             confirmed_by         TEXT NOT NULL,
-            confirmed_at         TEXT NOT NULL
+            confirmed_at         TEXT NOT NULL,
+            review_seconds       INTEGER,
+            evidence_adequacy    TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_final_candidate ON final_record(candidate_id);
 
@@ -173,6 +175,19 @@ class SqliteRepository:
         """
         with self._connect() as conn:
             conn.executescript(ddl)
+            # 기존 DB 마이그레이션: 없는 컬럼만 추가 (무손실)
+            self._ensure_columns(conn, "final_record", {
+                "review_seconds": "INTEGER",
+                "evidence_adequacy": "TEXT",
+            })
+
+    @staticmethod
+    def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
+        """table에 없는 컬럼만 ALTER TABLE ADD COLUMN으로 추가한다(idempotent)."""
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for col, decl in columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     # ------------------------------------------------------------------
     # Video
@@ -438,8 +453,9 @@ class SqliteRepository:
         INSERT OR REPLACE INTO final_record (
             id, candidate_id, pseudonym_id, final_behavior,
             confirmed_areas_json, confirmed_items_json,
-            decision, edited, confirmed_by, confirmed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            decision, edited, confirmed_by, confirmed_at,
+            review_seconds, evidence_adequacy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         areas_json = json.dumps(record.confirmed_areas)
         items_json = json.dumps([i.model_dump(mode="json") for i in record.confirmed_items])
@@ -449,6 +465,7 @@ class SqliteRepository:
                 record.final_behavior, areas_json, items_json,
                 record.decision, int(record.edited),
                 record.confirmed_by, _dt_to_str(record.confirmed_at),
+                record.review_seconds, record.evidence_adequacy,
             ))
 
     def list_final_records(self, video_id: Optional[str] = None) -> list[FinalRecord]:
@@ -549,6 +566,9 @@ def _row_to_final_record(r: sqlite3.Row) -> FinalRecord:
         KicceItemCandidate.model_validate(item)
         for item in json.loads(r["confirmed_items_json"] or "[]")
     ]
+    keys = set(r.keys())
+    review_seconds = r["review_seconds"] if "review_seconds" in keys else None
+    evidence_adequacy = r["evidence_adequacy"] if "evidence_adequacy" in keys else None
     return FinalRecord(
         id=r["id"], candidate_id=r["candidate_id"],
         pseudonym_id=r["pseudonym_id"], final_behavior=r["final_behavior"],
@@ -556,4 +576,6 @@ def _row_to_final_record(r: sqlite3.Row) -> FinalRecord:
         decision=r["decision"], edited=bool(r["edited"]),
         confirmed_by=r["confirmed_by"],
         confirmed_at=_str_to_dt(r["confirmed_at"]),
+        review_seconds=review_seconds,
+        evidence_adequacy=evidence_adequacy,
     )

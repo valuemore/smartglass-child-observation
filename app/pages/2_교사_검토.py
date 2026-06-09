@@ -1,5 +1,6 @@
 import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -152,6 +153,14 @@ for item in review_items:
         f"{cand.time_start:.1f}s – {cand.time_end:.1f}s  | 신뢰도 {cand.confidence:.2f}{status_badge}",
         expanded=(final is None),
     ):
+        # 검토 소요 시간 타이머: 후보가 이 세션에서 처음 렌더된 시점 기록
+        open_key = f"review_open_{cand.id}"
+        if open_key not in st.session_state:
+            st.session_state[open_key] = time.time()
+
+        def _elapsed_seconds() -> int:
+            return max(0, int(time.time() - st.session_state.get(open_key, time.time())))
+
         st.markdown(f"**관찰 행동 (후보)**: {cand.observed_behavior}")
         st.markdown(f"**시각적 근거**: {cand.visual_evidence}")
         if cand.activity_context:
@@ -209,6 +218,18 @@ for item in review_items:
             key=f"edit_{cand.id}",
         )
 
+        # ── AI 후보 시각적 근거 적절성 (교사 판단, 유아 평가 아님) ──────
+        adequacy_label = st.radio(
+            "AI 후보의 시각적 근거 적절성 (선택)",
+            options=["미평가", "적절", "부분", "부적절"],
+            horizontal=True,
+            key=f"adeq_{cand.id}",
+            help="AI 후보가 제시한 시각적 근거의 품질 평가입니다. 유아 발달·관찰수준 점수가 아닙니다.",
+        )
+        _ADEQ_MAP = {"적절": "adequate", "부분": "partial", "부적절": "inadequate"}
+        evidence_adequacy = _ADEQ_MAP.get(adequacy_label)
+        st.caption("⏱ 검토 소요 시간은 후보 열람~확정 경과(유휴 포함) 근사값으로 기록됩니다.")
+
         if final is not None:
             st.info(
                 f"이미 검토 완료된 후보입니다 (결정: {final.decision}). "
@@ -227,7 +248,9 @@ for item in review_items:
                     confirmed_areas=selected_areas, confirmed_items=selected_items,
                     decision="accepted", repo=repo, actor=DEFAULT_ACTOR,
                     video_id=selected_video_id,
+                    review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )
+                st.session_state.pop(open_key, None)
                 st.success("채택하여 확정 기록을 저장했습니다.")
                 st.rerun()
 
@@ -239,7 +262,9 @@ for item in review_items:
                     confirmed_areas=selected_areas, confirmed_items=selected_items,
                     decision="edited", repo=repo, actor=DEFAULT_ACTOR,
                     video_id=selected_video_id,
+                    review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )
+                st.session_state.pop(open_key, None)
                 st.success("수정한 내용으로 확정 기록을 저장했습니다.")
                 st.rerun()
 
@@ -251,7 +276,9 @@ for item in review_items:
                     confirmed_areas=[], confirmed_items=[],
                     decision="rejected", repo=repo, actor=DEFAULT_ACTOR,
                     video_id=selected_video_id,
+                    review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )
+                st.session_state.pop(open_key, None)
                 st.success("기각 처리하여 기록을 저장했습니다.")
                 st.rerun()
 

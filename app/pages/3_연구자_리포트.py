@@ -215,6 +215,37 @@ if ret.get("nuri_suggested", 0) == 0 and ret.get("kicce_suggested", 0) == 0:
 
 st.divider()
 
+# ─── 7c-2. 교사 검토 노력 (소요 시간·근거 적절성) ────────────────────────────
+st.subheader("🧑‍🏫 교사 검토 노력")
+st.caption(
+    "검토 소요 시간과 AI 후보 시각적 근거 적절성입니다. "
+    "AI 성능 점수·유아 평가가 아닌 검토 워크플로우 지표입니다."
+)
+effort = report.get("review_effort", {})
+e1, e2 = st.columns(2)
+_avg = effort.get("review_seconds_avg")
+e1.metric(
+    "평균 검토 소요(초)",
+    f"{_avg:.1f}" if _avg is not None else "—",
+    help=f"시간 기록된 확정 {effort.get('reviewed_with_timing', 0)}건 기준 (열람~확정, 유휴 포함 근사값)",
+)
+e2.metric("누적 검토 소요(초)", effort.get("review_seconds_total", 0))
+
+adeq = effort.get("evidence_adequacy_distribution", {})
+if adeq:
+    _ADEQ_LABEL = {"adequate": "적절", "partial": "부분", "inadequate": "부적절", "unrated": "미평가"}
+    df_adeq = pd.DataFrame(
+        {
+            "근거 적절성": [_ADEQ_LABEL.get(k, k) for k in ["adequate", "partial", "inadequate", "unrated"]],
+            "건수": [adeq.get(k, 0) for k in ["adequate", "partial", "inadequate", "unrated"]],
+        }
+    ).set_index("근거 적절성")
+    st.dataframe(df_adeq, use_container_width=True)
+    if df_adeq["건수"].sum() > 0:
+        st.bar_chart(df_adeq, height=200)
+
+st.divider()
+
 # ─── 7d. 감사 로그 완전성 ────────────────────────────────────────────────────
 st.subheader("🛡 감사 로그 완전성")
 st.caption("이 영상에 대해 upload·access·analyze·export·delete 액션이 기록됐는지 점검합니다.")

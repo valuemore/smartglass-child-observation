@@ -26,6 +26,8 @@ SpeakerHint = Literal["teacher", "child", "unknown"]
 DecisionType = Literal["accepted", "edited", "rejected"]
 AuditAction = Literal["upload", "access", "analyze", "export", "delete"]
 FrameLayout = Literal["sequence", "grid_2x2", "grid_3x1"]
+# AI 후보의 시각적 근거 적절성(교사 판단). 유아 발달/관찰수준 점수가 아님.
+EvidenceAdequacy = Literal["adequate", "partial", "inadequate"]
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +257,14 @@ class FinalRecord(BaseModel):
     edited: bool = Field(description="후보 대비 수정 여부")
     confirmed_by: str
     confirmed_at: datetime = Field(default_factory=datetime.now)
+    review_seconds: Optional[int] = Field(
+        default=None, ge=0,
+        description="후보 열람~확정 경과(초). AI 지원 워크플로우 분석용, 유아 평가 아님.",
+    )
+    evidence_adequacy: Optional[EvidenceAdequacy] = Field(
+        default=None,
+        description="AI 후보의 시각적 근거 적절성(교사 판단). 유아 발달/관찰수준 점수 아님.",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -356,3 +356,88 @@ def test_uses_tmp_path_not_real_db(tmp_path: Path) -> None:
     assert db_file.exists(), "tmp_path DB 가 생성되어야 함"
     # 저장소가 tmp_path 경로를 사용하고 있어야 함 (data/app.db 가 아님)
     assert repo.db_path == str(db_file), "테스트 저장소는 tmp_path DB 를 가리켜야 함"
+
+
+# ---------------------------------------------------------------------------
+# 테스트 11: (P-B.1) review_seconds / evidence_adequacy 저장·왕복
+# ---------------------------------------------------------------------------
+
+def test_final_record_review_metadata_roundtrip(repo: SqliteRepository) -> None:
+    repo.save_video(_video())
+    repo.add_scenes([_scene()])
+    repo.add_candidates([_candidate()])
+    rec = _final_record()
+    rec.review_seconds = 73
+    rec.evidence_adequacy = "partial"
+    repo.save_final_record(rec)
+
+    saved = repo.list_final_records(video_id="vid_001")[0]
+    assert saved.review_seconds == 73
+    assert saved.evidence_adequacy == "partial"
+
+
+def test_final_record_review_metadata_defaults_none(repo: SqliteRepository) -> None:
+    """신규 컬럼 미지정 시 None 으로 저장·조회된다."""
+    repo.save_video(_video())
+    repo.add_scenes([_scene()])
+    repo.add_candidates([_candidate()])
+    repo.save_final_record(_final_record())
+
+    saved = repo.list_final_records(video_id="vid_001")[0]
+    assert saved.review_seconds is None
+    assert saved.evidence_adequacy is None
+
+
+# ---------------------------------------------------------------------------
+# 테스트 12: (P-B.1) 구버전 스키마 DB 무손실 마이그레이션
+# ---------------------------------------------------------------------------
+
+def test_init_schema_migrates_legacy_final_record(tmp_path: Path) -> None:
+    """신규 컬럼이 없는 구버전 final_record 테이블도 init_schema 가 무손실 보강한다."""
+    import sqlite3
+
+    db_file = tmp_path / "legacy.db"
+    # 신규 컬럼(review_seconds/evidence_adequacy) 없는 구버전 테이블을 직접 생성
+    conn = sqlite3.connect(str(db_file))
+    conn.execute(
+        """
+        CREATE TABLE final_record (
+            id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
+            pseudonym_id TEXT NOT NULL,
+            final_behavior TEXT NOT NULL,
+            confirmed_areas_json TEXT NOT NULL DEFAULT '[]',
+            confirmed_items_json TEXT NOT NULL DEFAULT '[]',
+            decision TEXT NOT NULL,
+            edited INTEGER NOT NULL,
+            confirmed_by TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO final_record VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("rec_legacy", "cand_legacy", "child_001", "구버전 확정 기록",
+         "[]", "[]", "accepted", 0, "teacher_01", "2026-06-01T10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    # init_schema 가 ALTER TABLE 로 신규 컬럼을 보강해야 한다
+    repo = SqliteRepository(str(db_file))
+    repo.init_schema()
+
+    cols = {row["name"] for row in repo._connect().execute("PRAGMA table_info(final_record)")}
+    assert "review_seconds" in cols
+    assert "evidence_adequacy" in cols
+
+    # 기존 행은 보존되고, 신규 컬럼은 None 으로 조회된다(무손실)
+    saved = repo.list_final_records()
+    assert len(saved) == 1
+    assert saved[0].id == "rec_legacy"
+    assert saved[0].final_behavior == "구버전 확정 기록"
+    assert saved[0].review_seconds is None
+    assert saved[0].evidence_adequacy is None
+
+    # 마이그레이션은 idempotent — 재호출해도 오류 없음
+    repo.init_schema()

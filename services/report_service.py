@@ -75,6 +75,7 @@ def build_video_report(video_id: str, repo) -> dict:
     # P-A: 전처리 카운트 · AI 후보 유지율 · 감사 완전성 (기존 데이터만으로 산출)
     report.update(calculate_preprocessing_counts(video_id, repo))
     report["candidate_retention"] = calculate_candidate_retention(candidates, finals, repo)
+    report["review_effort"] = calculate_review_effort(finals)
     report["audit_completeness"] = calculate_audit_completeness(video_id, repo)
     return report
 
@@ -185,6 +186,29 @@ def calculate_candidate_retention(
     }
 
 
+def calculate_review_effort(finals: list[FinalRecord]) -> dict:
+    """교사 검토 워크플로우 지표를 반환한다(유아 평가 아님).
+
+    - review_seconds_avg / review_seconds_total: 값이 기록된 확정만 집계.
+    - evidence_adequacy_distribution: adequate/partial/inadequate/unrated 카운트.
+    """
+    seconds = [f.review_seconds for f in finals if f.review_seconds is not None]
+    total = sum(seconds)
+    avg = round(total / len(seconds), 1) if seconds else None
+
+    dist = {"adequate": 0, "partial": 0, "inadequate": 0, "unrated": 0}
+    for f in finals:
+        key = f.evidence_adequacy if f.evidence_adequacy in dist else "unrated"
+        dist[key] += 1
+
+    return {
+        "review_seconds_total": total,
+        "review_seconds_avg": avg,
+        "reviewed_with_timing": len(seconds),
+        "evidence_adequacy_distribution": dist,
+    }
+
+
 def calculate_audit_completeness(video_id: str, repo) -> dict:
     """영상 감사 로그에 5종 액션이 모두 기록됐는지 점검한다(진단용).
 
@@ -259,6 +283,7 @@ def export_report_json(video_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
             "kept_frame_count": report["kept_frame_count"],
         },
         "candidate_retention": report["candidate_retention"],
+        "review_effort": report["review_effort"],
         "audit_completeness": report["audit_completeness"],
         "area_distribution": report["area_distribution"],
         "kicce_coverage": report["kicce_coverage"],

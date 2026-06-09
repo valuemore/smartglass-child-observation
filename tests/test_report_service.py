@@ -33,6 +33,7 @@ from services.report_service import (
     calculate_candidate_retention,
     calculate_kicce_coverage,
     calculate_preprocessing_counts,
+    calculate_review_effort,
     export_report_csv,
     export_report_json,
 )
@@ -421,6 +422,49 @@ def test_export_json_has_new_metrics(repo, seeded):
     assert "kept_frame_count" in summary
     assert "candidate_retention" in data
     assert "audit_completeness" in data
+
+
+def test_review_effort_aggregates_timing_and_adequacy():
+    """(P-B.1) review_seconds 평균/합계와 근거 적절성 분포를 집계한다."""
+    finals = [
+        _make_final("c1", "child_001", "accepted"),
+        _make_final("c2", "child_001", "edited"),
+        _make_final("c3", "child_002", "rejected"),
+        _make_final("c4", "child_002", "accepted"),
+    ]
+    finals[0].review_seconds = 30
+    finals[0].evidence_adequacy = "adequate"
+    finals[1].review_seconds = 90
+    finals[1].evidence_adequacy = "partial"
+    finals[2].evidence_adequacy = "inadequate"
+    # finals[3]: 타이밍·적절성 미기록 → unrated, 타이밍 집계 제외
+
+    effort = calculate_review_effort(finals)
+    assert effort["review_seconds_total"] == 120
+    assert effort["review_seconds_avg"] == 60.0
+    assert effort["reviewed_with_timing"] == 2
+    dist = effort["evidence_adequacy_distribution"]
+    assert dist == {"adequate": 1, "partial": 1, "inadequate": 1, "unrated": 1}
+
+
+def test_review_effort_empty_when_no_timing():
+    """타이밍이 전혀 없으면 avg 는 None, total 0, 전부 unrated."""
+    finals = [_make_final("c1", "child_001", "accepted")]
+    effort = calculate_review_effort(finals)
+    assert effort["review_seconds_total"] == 0
+    assert effort["review_seconds_avg"] is None
+    assert effort["reviewed_with_timing"] == 0
+    assert effort["evidence_adequacy_distribution"]["unrated"] == 1
+
+
+def test_export_json_includes_review_effort(repo, seeded):
+    import json as _json
+    v, _, _ = seeded
+    data = _json.loads(export_report_json(v.id, repo))
+    assert "review_effort" in data
+    re = data["review_effort"]
+    assert "review_seconds_avg" in re
+    assert "evidence_adequacy_distribution" in re
 
 
 def test_export_json_guard_raises_on_injected_path(repo):

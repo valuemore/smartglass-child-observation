@@ -1,8 +1,12 @@
-﻿import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
+import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
+
+import uuid
+from datetime import datetime
 
 import streamlit as st
 
 from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR, VISION_DRY_RUN, VISION_PROVIDER
+from core.schemas import AuditLog
 from services.observation_service import (
     generate_mock_observation_candidates,
     generate_observation_candidates_with_provider,
@@ -152,51 +156,45 @@ def _show_candidate_with_mappings(cand, mappings: list) -> None:
 # ===========================================================================
 st.subheader("1단계: 영상 파일 업로드")
 
-uploaded_file = st.file_uploader(
-    "스마트안경 녹화 영상을 선택하세요",
+st.caption("여러 3분 클립을 한 번에 업로드할 수 있습니다(현장 검증 배치 업로드).")
+
+uploaded_files = st.file_uploader(
+    "스마트안경 녹화 영상을 선택하세요 (여러 클립 선택 가능)",
     type=["mp4", "mov", "m4v", "avi"],
+    accept_multiple_files=True,
     help="지원 형식: mp4, mov, m4v, avi. 원본 영상은 로컬 data/videos/ 에만 저장됩니다.",
 )
 
-if uploaded_file is not None:
-    state_key = f"saved_video_{uploaded_file.name}_{uploaded_file.size}"
+if uploaded_files:
+    results: list[dict] = []
+    progress = st.progress(0.0, text="업로드 준비 중...")
+    for i, uf in enumerate(uploaded_files):
+        progress.progress(i / len(uploaded_files), text=f"업로드 중: {uf.name}")
+        state_key = f"saved_video_{uf.name}_{uf.size}"
+        if state_key in st.session_state:
+            v = st.session_state[state_key]
+            results.append({"파일명": uf.name, "상태": "↺ 기존 저장됨",
+                            "영상 ID": v.id, "길이(초)": round(v.duration_sec, 1)})
+            continue
+        try:
+            video = save_uploaded_video(
+                file_bytes=uf.read(), filename=uf.name,
+                repo=repo, videos_dir=VIDEOS_DIR, actor=DEFAULT_ACTOR,
+            )
+            st.session_state[state_key] = video
+            results.append({"파일명": uf.name, "상태": "✅ 저장됨",
+                            "영상 ID": video.id, "길이(초)": round(video.duration_sec, 1)})
+        except Exception as e:
+            results.append({"파일명": uf.name, "상태": "❌ 실패",
+                            "영상 ID": "-", "길이(초)": f"오류: {e}"})
+    progress.progress(1.0, text="업로드 완료")
 
-    if state_key not in st.session_state:
-        with st.spinner("영상을 저장하고 메타데이터를 추출하는 중..."):
-            file_bytes = uploaded_file.read()
-            try:
-                video = save_uploaded_video(
-                    file_bytes=file_bytes,
-                    filename=uploaded_file.name,
-                    repo=repo,
-                    videos_dir=VIDEOS_DIR,
-                    actor=DEFAULT_ACTOR,
-                )
-                st.session_state[state_key] = video
-            except Exception as e:
-                st.error(f"업로드 실패: {e}")
-                st.stop()
-
-    video = st.session_state[state_key]
-
-    st.success("영상이 성공적으로 저장되었습니다.")
-    with st.container(border=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**파일명**: {video.filename}")
-            st.markdown(f"**영상 ID**: `{video.id}`")
-            st.markdown(f"**저장 경로**: `{video.stored_path}`")
-        with col2:
-            dur = f"{video.duration_sec:.1f}초" if video.duration_sec > 0 else "알 수 없음"
-            fps_str = f"{video.fps:.2f} fps" if video.fps > 0 else "알 수 없음"
-            res = f"{video.width}×{video.height}" if video.width > 0 else "알 수 없음"
-            st.markdown(f"**길이**: {dur}")
-            st.markdown(f"**FPS**: {fps_str}")
-            st.markdown(f"**해상도**: {res}")
-        st.markdown(
-            f"**보관 기한**: {video.retention_until.strftime('%Y-%m-%d') if video.retention_until else '없음'}"
-        )
-        st.markdown("**감사 로그**: 업로드 기록이 저장되었습니다. ✅")
+    ok = sum(1 for r in results if r["상태"].startswith("✅"))
+    skipped = sum(1 for r in results if r["상태"].startswith("↺"))
+    failed = sum(1 for r in results if r["상태"].startswith("❌"))
+    st.success(f"업로드 처리 완료 — 신규 {ok}건 · 기존 {skipped}건 · 실패 {failed}건")
+    st.dataframe(results, use_container_width=True, hide_index=True)
+    st.caption("각 영상의 업로드 기록이 감사 로그(audit_log)에 저장되었습니다. ✅")
 
 else:
     st.info("영상 파일을 선택하면 업로드와 메타데이터 추출이 자동으로 진행됩니다.")
@@ -407,7 +405,7 @@ if _prov == "mock":
     )
 elif _prov == "external" and VISION_DRY_RUN:
     st.warning(
-        "VISION_DRY_RUN=true입니다. payload 검증만 수행하고 실제 외부 API는 호출하지 않습니다. "
+        "VISION_DRY_RUN=true입니다. payload 빌드·guard 검증을 수행하되 실제 외부 API는 호출하지 않습니다. "
         "실호출을 원하면 .env에서 VISION_DRY_RUN=false로 설정하세요."
     )
     _ext_videos = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
@@ -436,7 +434,7 @@ elif _prov == "external" and VISION_DRY_RUN:
                     st.error(f"dry_run 실패: {_e}")
 elif _prov == "external" and not VISION_DRY_RUN:
     st.error(
-        "**VISION_DRY_RUN=false — 실제 외부 API가 호출됩니다. 비용이 발생합니다.**",
+        "**VISION_DRY_RUN=false — 실제 외부 API가 호출됩니다. 선별 프레임만 전송되며 비용이 발생합니다.**",
         icon="🚨",
     )
     _ext_videos2 = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
@@ -446,15 +444,27 @@ elif _prov == "external" and not VISION_DRY_RUN:
         _ext_opts2 = {f"{v.filename}  [{v.id}]": v.id for v in _ext_videos2}
         _ext_label2 = st.selectbox("실호출 분석 영상", list(_ext_opts2.keys()), key="ext_real_select")
         _ext_vid2 = _ext_opts2[_ext_label2]
-        _confirm_real = st.checkbox(
-            "실제 외부 API 호출에 동의합니다. 비용이 발생할 수 있습니다.",
-            key="confirm_real_api",
+        _reason = st.text_input(
+            "실호출 사유 (필수, 감사 로그에 기록됨)",
+            key="ext_real_reason",
+            placeholder="예: 3클래스 현장 검증 - 클립 12건 AI 후보 생성",
         )
-        if st.button(
-            "🌐 외부 비전 API 실호출 분석",
-            key="run_ext_real",
-            disabled=not _confirm_real,
-        ):
+        _confirm_cost = st.checkbox(
+            "실제 외부 API 호출과 비용 발생에 동의합니다.", key="confirm_real_api",
+        )
+        _confirm_noret = st.checkbox(
+            "외부 제공자의 데이터 무보존·학습 미사용 조건을 확인했습니다.", key="confirm_no_retention",
+        )
+        _ready = bool(_reason.strip()) and _confirm_cost and _confirm_noret
+        if not _ready:
+            st.caption("사유 입력과 두 확인 항목을 모두 충족해야 실행할 수 있습니다.")
+        if st.button("🌐 외부 비전 API 실호출 분석", key="run_ext_real", disabled=not _ready):
+            repo.write_audit(AuditLog(
+                id=f"audit_{_ext_vid2}_approve_{uuid.uuid4().hex[:6]}",
+                video_id=_ext_vid2, actor=DEFAULT_ACTOR, action="analyze",
+                detail=f"external_real_call_approved reason={_reason.strip()}",
+                created_at=datetime.now(),
+            ))
             with st.spinner("외부 비전 API 호출 중..."):
                 try:
                     _cands2, _info2 = generate_observation_candidates_with_provider(
@@ -467,93 +477,7 @@ elif _prov == "external" and not VISION_DRY_RUN:
                     )
                     if _info2.get("fallback_reason"):
                         st.caption(f"폴백 사유: {_info2['fallback_reason']}")
-                    st.markdown("**감사 로그**: analyze 기록이 저장되었습니다. ✅")
-                    for _c2 in _cands2:
-                        with st.expander(
-                            f"[{_c2.temp_child_id}]  {_c2.time_start:.1f}s – {_c2.time_end:.1f}s",
-                            expanded=True,
-                        ):
-                            _show_candidate_card(_c2)
-                except Exception as _e2:
-                    st.error(f"외부 API 분석 실패: {_e2}")
-
-st.divider()
-
-
-# ===========================================================================
-# 섹션 3b: 외부 비전 API 연결 분석 (dry_run 포함)
-# ===========================================================================
-st.subheader("3b단계: 외부 비전 API 연결 분석")
-_prov = VISION_PROVIDER.lower()
-if _prov == "mock":
-    st.info(
-        "현재 VISION_PROVIDER=mock으로 설정되어 있습니다. "
-        "외부 API 연결 분석을 사용하려면 .env에서 VISION_PROVIDER=external과 "
-        "VISION_MODEL을 설정하세요. API 키 입력은 UI에서 지원하지 않습니다."
-    )
-elif _prov == "external" and VISION_DRY_RUN:
-    st.warning(
-        "VISION_DRY_RUN=true입니다. payload 검증만 수행하고 실제 외부 API는 호출하지 않습니다. "
-        "실호출을 원하면 .env에서 VISION_DRY_RUN=false로 설정하세요."
-    )
-    _ext_videos = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
-    if not _ext_videos:
-        st.warning("전처리된 영상이 없습니다. 2단계를 먼저 실행해주세요.")
-    else:
-        _ext_opts = {f"{v.filename}  [{v.id}]": v.id for v in _ext_videos}
-        _ext_label = st.selectbox("dry_run 분석 영상", list(_ext_opts.keys()), key="ext_dryrun_select")
-        _ext_vid = _ext_opts[_ext_label]
-        if st.button("🧪 External dry_run 분석 실행 (API 호출 없음)", key="run_ext_dryrun"):
-            with st.spinner("payload 빌드 및 guard 검증 중 (실제 API 미호출)..."):
-                try:
-                    _cands, _info = generate_observation_candidates_with_provider(
-                        video_id=_ext_vid, repo=repo, actor=DEFAULT_ACTOR,
-                    )
-                    st.success(
-                        f"dry_run 완료 — provider={_info['provider']}, "
-                        f"model={_info['model'] or '(미설정)'}, "
-                        f"dry_run={_info['dry_run']}, "
-                        f"저장={_info['stored']}개, 폐기={_info['discarded']}개"
-                    )
-                    if _info.get("fallback_reason"):
-                        st.caption(f"폴백 사유: {_info['fallback_reason']}")
-                    st.markdown("**감사 로그**: analyze 기록이 저장되었습니다. ✅")
-                except Exception as _e:
-                    st.error(f"dry_run 실패: {_e}")
-elif _prov == "external" and not VISION_DRY_RUN:
-    st.error(
-        "**VISION_DRY_RUN=false — 실제 외부 API가 호출됩니다. 비용이 발생합니다.**",
-        icon="🚨",
-    )
-    _ext_videos2 = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
-    if not _ext_videos2:
-        st.warning("전처리된 영상이 없습니다. 2단계를 먼저 실행해주세요.")
-    else:
-        _ext_opts2 = {f"{v.filename}  [{v.id}]": v.id for v in _ext_videos2}
-        _ext_label2 = st.selectbox("실호출 분석 영상", list(_ext_opts2.keys()), key="ext_real_select")
-        _ext_vid2 = _ext_opts2[_ext_label2]
-        _confirm_real = st.checkbox(
-            "실제 외부 API 호출에 동의합니다. 비용이 발생할 수 있습니다.",
-            key="confirm_real_api",
-        )
-        if st.button(
-            "🌐 외부 비전 API 실호출 분석",
-            key="run_ext_real",
-            disabled=not _confirm_real,
-        ):
-            with st.spinner("외부 비전 API 호출 중..."):
-                try:
-                    _cands2, _info2 = generate_observation_candidates_with_provider(
-                        video_id=_ext_vid2, repo=repo, actor=DEFAULT_ACTOR,
-                    )
-                    st.success(
-                        f"외부 API 분석 완료 — provider={_info2['provider']}, "
-                        f"model={_info2['model']}, "
-                        f"저장={_info2['stored']}개, 폐기={_info2['discarded']}개"
-                    )
-                    if _info2.get("fallback_reason"):
-                        st.caption(f"폴백 사유: {_info2['fallback_reason']}")
-                    st.markdown("**감사 로그**: analyze 기록이 저장되었습니다. ✅")
+                    st.markdown("**감사 로그**: 승인 사유 및 analyze 기록이 저장되었습니다. ✅")
                     for _c2 in _cands2:
                         with st.expander(
                             f"[{_c2.temp_child_id}]  {_c2.time_start:.1f}s – {_c2.time_end:.1f}s",

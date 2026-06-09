@@ -300,3 +300,66 @@ def test_list_final_records_for_video(repo: SqliteRepository, seeded):
         decision="accepted", repo=repo, video_id=v.id,
     )
     assert len(list_final_records_for_video(v.id, repo)) == 1
+
+
+# ---------------------------------------------------------------------------
+# 13. (P-B.1) review_seconds / evidence_adequacy 저장·왕복
+# ---------------------------------------------------------------------------
+
+def test_finalize_persists_review_metadata(repo: SqliteRepository, seeded):
+    v, cand = seeded
+    rec = finalize_candidate(
+        candidate_id=cand.id, pseudonym_id="child_001",
+        final_behavior=cand.observed_behavior,
+        confirmed_areas=["사회관계"], confirmed_items=[],
+        decision="accepted", repo=repo, video_id=v.id,
+        review_seconds=42, evidence_adequacy="adequate",
+    )
+    assert rec.review_seconds == 42
+    assert rec.evidence_adequacy == "adequate"
+    # DB 왕복 후에도 값이 보존되어야 한다
+    saved = repo.list_final_records(v.id)[0]
+    assert saved.review_seconds == 42
+    assert saved.evidence_adequacy == "adequate"
+
+
+def test_finalize_review_metadata_optional(repo: SqliteRepository, seeded):
+    """review_seconds / evidence_adequacy 미지정 시 None 으로 저장된다(하위호환)."""
+    v, cand = seeded
+    finalize_candidate(
+        candidate_id=cand.id, pseudonym_id="child_001",
+        final_behavior=cand.observed_behavior,
+        confirmed_areas=[], confirmed_items=[],
+        decision="accepted", repo=repo, video_id=v.id,
+    )
+    saved = repo.list_final_records(v.id)[0]
+    assert saved.review_seconds is None
+    assert saved.evidence_adequacy is None
+
+
+def test_evidence_adequacy_in_audit_detail(repo: SqliteRepository, seeded):
+    v, cand = seeded
+    finalize_candidate(
+        candidate_id=cand.id, pseudonym_id="child_001",
+        final_behavior=cand.observed_behavior,
+        confirmed_areas=[], confirmed_items=[],
+        decision="edited", repo=repo, video_id=v.id,
+        review_seconds=10, evidence_adequacy="partial",
+    )
+    logs = repo.list_audit_logs(v.id)
+    details = [l.detail or "" for l in logs]
+    assert any("teacher_review_finalize" in d and "evidence=partial" in d for d in details)
+
+
+def test_review_seconds_rejects_negative():
+    """review_seconds 는 0 이상이어야 한다(Pydantic 검증)."""
+    from pydantic import ValidationError
+
+    from core.schemas import FinalRecord
+    with pytest.raises(ValidationError):
+        FinalRecord(
+            id="final_x", candidate_id="cand_x", pseudonym_id="child_001",
+            final_behavior="x", confirmed_areas=[], confirmed_items=[],
+            decision="accepted", edited=False, confirmed_by="teacher",
+            confirmed_at=datetime.now(), review_seconds=-1,
+        )

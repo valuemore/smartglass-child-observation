@@ -131,12 +131,17 @@ def finalize_candidate(
     repo,
     actor: str = DEFAULT_ACTOR,
     video_id: Optional[str] = None,
+    review_seconds: Optional[int] = None,
+    evidence_adequacy: Optional[str] = None,
 ) -> FinalRecord:
     """관찰 후보를 교사 확정 기록(final_record)으로 저장한다.
 
     - decision: "accepted"(원문 채택) / "edited"(수정 채택) / "rejected"(기각).
     - edited 플래그는 decision == "edited" 일 때 True.
     - id 는 candidate_id 기반으로 고정해 같은 후보의 중복 확정을 방지한다(덮어쓰기).
+    - review_seconds: 후보 열람~확정 경과(초, 선택). 워크플로우 분석용.
+    - evidence_adequacy: AI 후보 시각적 근거 적절성(adequate|partial|inadequate, 선택).
+      유아 발달/관찰수준 점수가 아님.
     - audit_log 를 반드시 함께 기록한다.
     """
     if decision not in ("accepted", "edited", "rejected"):
@@ -157,6 +162,8 @@ def finalize_candidate(
         edited=(decision == "edited"),
         confirmed_by=actor,
         confirmed_at=datetime.now(),
+        review_seconds=review_seconds,
+        evidence_adequacy=evidence_adequacy,
     )
     repo.save_final_record(record)
 
@@ -165,7 +172,10 @@ def finalize_candidate(
         video_id=video_id,
         actor=actor,
         action="analyze",
-        detail=f"teacher_review_finalize decision={decision} candidate_id={candidate_id}",
+        detail=(
+            f"teacher_review_finalize decision={decision} candidate_id={candidate_id} "
+            f"evidence={evidence_adequacy or '-'}"
+        ),
         created_at=datetime.now(),
     ))
     return record
