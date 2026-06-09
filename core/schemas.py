@@ -37,9 +37,9 @@ class Video(BaseModel):
     filename: str
     stored_path: str
     duration_sec: float = Field(ge=0.0)
-    fps: float = Field(gt=0.0)
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
+    fps: float = Field(ge=0.0)       # 0 = 메타 추출 실패(미지)
+    width: int = Field(ge=0)         # 0 = 메타 추출 실패(미지)
+    height: int = Field(ge=0)        # 0 = 메타 추출 실패(미지)
     status: VideoStatus = "uploaded"
     created_at: datetime
     retention_until: Optional[datetime] = None
