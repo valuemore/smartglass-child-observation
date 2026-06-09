@@ -311,10 +311,36 @@ else:
                         _show_candidate_card(cand)
                 st.markdown("**감사 로그**: Mock 분석(analyze) 기록이 저장되었습니다. ✅")
             else:
-                st.warning(
-                    "생성된 관찰 후보가 없습니다. "
-                    "2단계에서 품질 통과(kept=True) 프레임이 추출되었는지 확인해주세요."
-                )
+                # ── 진단 정보 표시 ─────────────────────────────────────
+                diag_scenes = repo.list_scenes(mock_video_id)
+                diag_frames: list = []
+                for sc in diag_scenes:
+                    diag_frames.extend(repo.list_frames(sc.id))
+                diag_kept = [f for f in diag_frames if f.kept]
+
+                with st.container(border=True):
+                    st.markdown("**후보 생성 진단 정보**")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("scene 수", len(diag_scenes))
+                    c2.metric("frame 수", len(diag_frames))
+                    c3.metric("kept frame 수", len(diag_kept))
+
+                if not diag_scenes:
+                    st.warning(
+                        "전처리된 장면이 없습니다. "
+                        "2단계에서 장면 분할 및 프레임 추출을 먼저 실행해주세요."
+                    )
+                elif not diag_kept:
+                    st.error(
+                        "kept=True 프레임이 DB에 없습니다. "
+                        "이전 전처리 데이터에 kept 값이 올바르게 저장되지 않았을 수 있습니다. "
+                        "**2단계에서 해당 영상의 장면 분할 및 프레임 추출을 다시 실행해주세요.**"
+                    )
+                else:
+                    st.error(
+                        f"kept 프레임이 {len(diag_kept)}개 있는데 후보가 생성되지 않았습니다. "
+                        "후보 생성 로직을 점검해주세요."
+                    )
 
 st.divider()
 st.caption(

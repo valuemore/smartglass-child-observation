@@ -215,3 +215,132 @@ def test_custom_adapter_injection(repo: SqliteRepository, video_with_kept_frame:
         video_with_kept_frame.id, repo, adapter=custom, actor="test_actor"
     )
     assert custom.call_count >= 1, "커스텀 어댑터가 호출되어야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 8. DB kept 값 roundtrip: int 1로 저장 → list_frames에서 True로 복원
+# ---------------------------------------------------------------------------
+
+def test_list_frames_kept_roundtrip(repo: SqliteRepository, tmp_path: Path):
+    """add_frames(kept=True) → list_frames() → frame.kept is True."""
+    v = _make_video(tmp_path, suffix="_roundtrip")
+    repo.save_video(v)
+
+    scene = Scene(
+        id=f"scene_{v.id}_0000",
+        video_id=v.id,
+        time_start=0.0,
+        time_end=5.0,
+        detector="fallback_fixed",
+    )
+    repo.add_scenes([scene])
+
+    img_path = _make_frame_image(tmp_path / "frames" / v.id / scene.id, "frm_rt.jpg")
+    frame = Frame(
+        id=f"frm_{scene.id}_rt",
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=60.0,
+        kept=True,
+    )
+    repo.add_frames([frame])
+
+    loaded = repo.list_frames(scene.id)
+    assert len(loaded) == 1
+    assert loaded[0].kept is True, f"kept 복원 실패: {loaded[0].kept!r} (type={type(loaded[0].kept).__name__})"
+    assert isinstance(loaded[0].kept, bool)
+
+
+# ---------------------------------------------------------------------------
+# 9. kept=False → kept=True 재저장 시 DB 값이 업데이트되어야 한다 (upsert)
+# ---------------------------------------------------------------------------
+
+def test_add_frames_upsert_updates_kept(repo: SqliteRepository, tmp_path: Path):
+    """INSERT OR IGNORE 대신 upsert: kept=False 후 kept=True 재저장 → DB에 True."""
+    v = _make_video(tmp_path, suffix="_upsert")
+    repo.save_video(v)
+
+    scene = Scene(
+        id=f"scene_{v.id}_0000",
+        video_id=v.id,
+        time_start=0.0,
+        time_end=5.0,
+        detector="fallback_fixed",
+    )
+    repo.add_scenes([scene])
+
+    img_path = _make_frame_image(tmp_path / "frames" / v.id / scene.id, "frm_up.jpg")
+    frame_id = f"frm_{scene.id}_up"
+
+    # 1차 저장: kept=False
+    repo.add_frames([Frame(
+        id=frame_id,
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=10.0,
+        kept=False,
+    )])
+    assert repo.list_frames(scene.id)[0].kept is False
+
+    # 2차 저장: kept=True (fallback 결과)
+    repo.add_frames([Frame(
+        id=frame_id,
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=10.0,
+        kept=True,
+    )])
+    updated = repo.list_frames(scene.id)
+    assert updated[0].kept is True, "재전처리 후 kept=True 가 DB에 반영되어야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 10. kept=False 후 kept=True 재저장 → observation_service 가 후보 생성
+# ---------------------------------------------------------------------------
+
+def test_kept_updated_via_upsert_generates_candidates(repo: SqliteRepository, tmp_path: Path):
+    """DB에 kept=False로 먼저 저장된 뒤 재전처리로 kept=True가 되면 후보가 생성되어야 한다."""
+    v = _make_video(tmp_path, suffix="_fixed")
+    repo.save_video(v)
+
+    scene = Scene(
+        id=f"scene_{v.id}_0000",
+        video_id=v.id,
+        time_start=0.0,
+        time_end=5.0,
+        detector="fallback_fixed",
+    )
+    repo.add_scenes([scene])
+
+    img_path = _make_frame_image(tmp_path / "frames" / v.id / scene.id, "frm_fix.jpg")
+    frame_id = f"frm_{scene.id}_fix"
+
+    # 1차: kept=False (이전 전처리 결과 시뮬레이션)
+    repo.add_frames([Frame(
+        id=frame_id,
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=10.0,
+        kept=False,
+    )])
+
+    # 이 상태에서는 후보 0개
+    assert generate_mock_observation_candidates(v.id, repo, actor="test") == []
+
+    # 2차: kept=True (fallback 적용 재전처리 시뮬레이션)
+    repo.add_frames([Frame(
+        id=frame_id,
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=10.0,
+        kept=True,
+    )])
+
+    # 이제 후보가 생성되어야 한다
+    candidates = generate_mock_observation_candidates(v.id, repo, actor="test")
+    assert len(candidates) >= 1, "upsert 후 kept=True 프레임이 있으면 후보가 생성되어야 한다"

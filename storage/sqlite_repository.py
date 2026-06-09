@@ -239,9 +239,11 @@ class SqliteRepository:
     # ------------------------------------------------------------------
 
     def add_frames(self, frames: list[Frame]) -> None:
+        # ON CONFLICT: kept 값만 갱신 — 재전처리 시 fallback 결과가 DB에 반영되어야 한다.
         sql = """
-        INSERT OR IGNORE INTO frame (id, scene_id, t, image_path, blur_score, kept)
+        INSERT INTO frame (id, scene_id, t, image_path, blur_score, kept)
         VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET kept = excluded.kept
         """
         with self._connect() as conn:
             conn.executemany(sql, [
