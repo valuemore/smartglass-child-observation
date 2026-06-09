@@ -20,6 +20,10 @@ from typing import Optional
 
 from core.config import DEFAULT_ACTOR
 from core.schemas import AuditLog, FinalRecord, ObservationCandidate
+from services.security_service import assert_no_sensitive_paths
+
+# 감사 로그 완전성 검사 대상 액션 (core.schemas.AuditAction과 동일)
+_AUDIT_ACTIONS = ("upload", "access", "analyze", "export", "delete")
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +54,7 @@ def build_video_report(video_id: str, repo) -> dict:
     unreviewed = total_cands - total_finals
 
     base = total_cands if total_cands > 0 else 1
-    return {
+    report = {
         "video_id": video_id,
         "filename": video.filename if video else "",
         "duration_sec": video.duration_sec if video else 0.0,
@@ -67,6 +71,12 @@ def build_video_report(video_id: str, repo) -> dict:
         "kicce_coverage": calculate_kicce_coverage(finals),
         "by_pseudonym": _group_by_pseudonym(finals, cand_map),
     }
+
+    # P-A: 전처리 카운트 · AI 후보 유지율 · 감사 완전성 (기존 데이터만으로 산출)
+    report.update(calculate_preprocessing_counts(video_id, repo))
+    report["candidate_retention"] = calculate_candidate_retention(candidates, finals, repo)
+    report["audit_completeness"] = calculate_audit_completeness(video_id, repo)
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +110,94 @@ def calculate_kicce_coverage(final_records: list[FinalRecord]) -> list[dict]:
                 }
             item_counts[key]["count"] += 1
     return sorted(item_counts.values(), key=lambda x: -x["count"])
+
+
+def calculate_preprocessing_counts(video_id: str, repo) -> dict:
+    """영상 전처리 카운트를 반환한다.
+
+    반환: scene_count, frame_count, kept_frame_count
+    """
+    scenes = repo.list_scenes(video_id)
+    frame_count = 0
+    kept_frame_count = 0
+    for sc in scenes:
+        frames = repo.list_frames(sc.id)
+        frame_count += len(frames)
+        kept_frame_count += sum(1 for f in frames if f.kept)
+    return {
+        "scene_count": len(scenes),
+        "frame_count": frame_count,
+        "kept_frame_count": kept_frame_count,
+    }
+
+
+def calculate_candidate_retention(
+    candidates: list[ObservationCandidate],
+    finals: list[FinalRecord],
+    repo,
+) -> dict:
+    """AI가 제시한 누리 영역·KICCE 문항 후보 중 교사가 확정에 유지한 비율을 반환한다.
+
+    - AI 제시 후보 출처: scale_mapping(repo.list_mappings) ∪ 후보 자체 필드.
+      (Mock+매핑 경로는 scale_mapping에, 외부 API 경로는 후보 필드에 담길 수 있어 합집합 사용)
+    - 분모: 검토된 후보(final_record 존재)의 AI 제시 후보 수. 기각 후보는 유지 0으로 포함.
+    - AI 성능 점수가 아니라 교사 판단 기여도(워크플로우) 지표다.
+    """
+    cand_map = {c.id: c for c in candidates}
+    nuri_sug = nuri_ret = kicce_sug = kicce_ret = 0
+    reviewed = 0
+
+    def _item_key(item) -> object:
+        item_id = getattr(item, "item_id", None)
+        return item_id if item_id is not None else getattr(item, "item_text", "")
+
+    for fr in finals:
+        cand = cand_map.get(fr.candidate_id)
+        if cand is None:
+            continue
+        reviewed += 1
+
+        mappings = repo.list_mappings(fr.candidate_id)
+
+        # AI 제시 누리 영역 (scale_mapping ∪ 후보 필드)
+        ai_areas = {m.area for m in mappings if m.scale == "nuri" and m.area}
+        ai_areas |= {n.area for n in cand.nuri_area_candidates if n.area}
+        conf_areas = set(fr.confirmed_areas or [])
+
+        # AI 제시 KICCE 문항 (item_id 우선, 없으면 item_text)
+        ai_items = {_item_key(m) for m in mappings if m.scale == "kicce"}
+        ai_items |= {_item_key(k) for k in cand.kicce_item_candidates}
+        conf_items = {_item_key(i) for i in fr.confirmed_items}
+
+        nuri_sug += len(ai_areas)
+        nuri_ret += len(ai_areas & conf_areas)
+        kicce_sug += len(ai_items)
+        kicce_ret += len(ai_items & conf_items)
+
+    return {
+        "reviewed_candidates": reviewed,
+        "nuri_suggested": nuri_sug,
+        "nuri_retained": nuri_ret,
+        "nuri_retention_rate": round(nuri_ret / nuri_sug, 4) if nuri_sug else 0.0,
+        "kicce_suggested": kicce_sug,
+        "kicce_retained": kicce_ret,
+        "kicce_retention_rate": round(kicce_ret / kicce_sug, 4) if kicce_sug else 0.0,
+    }
+
+
+def calculate_audit_completeness(video_id: str, repo) -> dict:
+    """영상 감사 로그에 5종 액션이 모두 기록됐는지 점검한다(진단용).
+
+    반환: {action: {"present": bool, "count": int}, ..., "missing_actions": [..]}
+    주의: access 등 미계측 액션은 missing으로 표시되며 이는 계측 공백을 드러내는 정상 결과다.
+    """
+    logs = repo.list_audit_logs(video_id)
+    result: dict = {}
+    for action in _AUDIT_ACTIONS:
+        count = sum(1 for lg in logs if lg.action == action)
+        result[action] = {"present": count > 0, "count": count}
+    result["missing_actions"] = [a for a in _AUDIT_ACTIONS if result[a]["count"] == 0]
+    return result
 
 
 def calculate_ai_teacher_comparison(
@@ -156,7 +254,12 @@ def export_report_json(video_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
             "acceptance_rate": report["acceptance_rate"],
             "edit_rate": report["edit_rate"],
             "rejection_rate": report["rejection_rate"],
+            "scene_count": report["scene_count"],
+            "frame_count": report["frame_count"],
+            "kept_frame_count": report["kept_frame_count"],
         },
+        "candidate_retention": report["candidate_retention"],
+        "audit_completeness": report["audit_completeness"],
         "area_distribution": report["area_distribution"],
         "kicce_coverage": report["kicce_coverage"],
         "by_pseudonym": {
@@ -170,6 +273,9 @@ def export_report_json(video_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
             for pid, recs in report["by_pseudonym"].items()
         },
     }
+
+    # defense-in-depth: 향후 필드 추가로 민감 경로가 새면 export를 즉시 중단
+    assert_no_sensitive_paths(export_data)
 
     repo.write_audit(AuditLog(
         id=f"audit_{video_id}_export_{uuid.uuid4().hex[:6]}",
@@ -189,6 +295,9 @@ def export_report_csv(video_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
     - export 실행 시 audit_log에 기록한다.
     """
     report = build_video_report(video_id, repo)
+
+    # defense-in-depth: CSV 행 출처 데이터에 민감 경로가 없는지 사전 검증
+    assert_no_sensitive_paths(report["by_pseudonym"])
 
     output = io.StringIO()
     writer = csv.writer(output)

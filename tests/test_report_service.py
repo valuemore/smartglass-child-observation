@@ -17,16 +17,22 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from core.schemas import (
+    AuditLog,
     FinalRecord,
+    Frame,
     KicceItemCandidate,
     ObservationCandidate,
     Scene,
+    ScaleMappingCandidate,
     Video,
 )
 from services.report_service import (
     build_video_report,
     calculate_area_distribution,
+    calculate_audit_completeness,
+    calculate_candidate_retention,
     calculate_kicce_coverage,
+    calculate_preprocessing_counts,
     export_report_csv,
     export_report_json,
 )
@@ -268,3 +274,170 @@ def test_no_score_fields(repo, seeded):
     for key in forbidden:
         assert key not in report, f"report dict에 금지된 필드: {key}"
         assert f'"{key}"' not in json_str, f"export JSON에 금지된 필드: {key}"
+
+
+# ---------------------------------------------------------------------------
+# P-A. 전처리 카운트
+# ---------------------------------------------------------------------------
+
+def test_preprocessing_counts(repo):
+    v = _make_video("vid_prep")
+    repo.save_video(v)
+    scenes = [_make_scene(v.id, i) for i in range(2)]
+    repo.add_scenes(scenes)
+    # scene0: 3프레임(kept 2), scene1: 1프레임(kept 1) → frame 4, kept 3
+    frames = [
+        Frame(id="f0", scene_id=scenes[0].id, t=0.1, image_path="frm0.jpg", blur_score=200.0, kept=True),
+        Frame(id="f1", scene_id=scenes[0].id, t=0.2, image_path="frm1.jpg", blur_score=10.0, kept=False),
+        Frame(id="f2", scene_id=scenes[0].id, t=0.3, image_path="frm2.jpg", blur_score=180.0, kept=True),
+        Frame(id="f3", scene_id=scenes[1].id, t=5.1, image_path="frm3.jpg", blur_score=150.0, kept=True),
+    ]
+    repo.add_frames(frames)
+
+    counts = calculate_preprocessing_counts(v.id, repo)
+    assert counts["scene_count"] == 2
+    assert counts["frame_count"] == 4
+    assert counts["kept_frame_count"] == 3
+
+    report = build_video_report(v.id, repo)
+    assert report["scene_count"] == 2
+    assert report["frame_count"] == 4
+    assert report["kept_frame_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# P-A. AI 후보 유지율 (scale_mapping 기준)
+# ---------------------------------------------------------------------------
+
+def test_candidate_retention_with_mappings(repo):
+    v = _make_video("vid_ret")
+    repo.save_video(v)
+    scene = _make_scene(v.id, 0)
+    repo.add_scenes([scene])
+    cand = _make_candidate(v.id, scene.id, "child_A", 0)
+    repo.add_candidates([cand])
+
+    # AI 제시: 누리 2개(사회관계, 자연탐구), KICCE 2개(item 7, 9)
+    repo.add_mappings([
+        ScaleMappingCandidate(id="m1", candidate_id=cand.id, scale="nuri",
+                              area="사회관계", item_text="사회관계", rationale="r", confidence=0.7),
+        ScaleMappingCandidate(id="m2", candidate_id=cand.id, scale="nuri",
+                              area="자연탐구", item_text="자연탐구", rationale="r", confidence=0.6),
+        ScaleMappingCandidate(id="m3", candidate_id=cand.id, scale="kicce",
+                              item_id=7, item_text="문항7", rationale="r", confidence=0.7),
+        ScaleMappingCandidate(id="m4", candidate_id=cand.id, scale="kicce",
+                              item_id=9, item_text="문항9", rationale="r", confidence=0.5),
+    ])
+
+    # 교사 확정: 누리 1개(사회관계) 유지, KICCE 1개(item 7) 유지
+    kept_item = KicceItemCandidate(item_id=7, item_text="문항7", rationale="r", confidence=0.7)
+    final = _make_final(cand.id, "child_001", "edited", ["사회관계"], [kept_item])
+    repo.save_final_record(final)
+
+    ret = calculate_candidate_retention([cand], [final], repo)
+    assert ret["reviewed_candidates"] == 1
+    assert ret["nuri_suggested"] == 2
+    assert ret["nuri_retained"] == 1
+    assert ret["nuri_retention_rate"] == 0.5
+    assert ret["kicce_suggested"] == 2
+    assert ret["kicce_retained"] == 1
+    assert ret["kicce_retention_rate"] == 0.5
+
+
+def test_candidate_retention_zero_base(repo, seeded):
+    """매핑이 없으면 분모 0 → 유지율 0.0 (ZeroDivision 없음)."""
+    v, _, _ = seeded  # seeded는 scale_mapping을 저장하지 않음
+    report = build_video_report(v.id, repo)
+    ret = report["candidate_retention"]
+    assert ret["nuri_suggested"] == 0
+    assert ret["nuri_retention_rate"] == 0.0
+    assert ret["kicce_retention_rate"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# P-A. 감사 완전성
+# ---------------------------------------------------------------------------
+
+def _audit(video_id: str, action: str) -> AuditLog:
+    return AuditLog(
+        id=f"audit_{video_id}_{action}_{uuid.uuid4().hex[:6]}",
+        video_id=video_id, actor="teacher_demo", action=action,
+        detail=action, created_at=datetime.now(),
+    )
+
+
+def test_audit_completeness_partial(repo):
+    v = _make_video("vid_audit_p")
+    repo.save_video(v)
+    repo.write_audit(_audit(v.id, "upload"))
+    repo.write_audit(_audit(v.id, "analyze"))
+
+    comp = calculate_audit_completeness(v.id, repo)
+    assert comp["upload"]["present"] is True
+    assert comp["analyze"]["present"] is True
+    assert comp["access"]["present"] is False
+    assert set(comp["missing_actions"]) == {"access", "export", "delete"}
+
+
+def test_audit_completeness_full(repo):
+    v = _make_video("vid_audit_f")
+    repo.save_video(v)
+    for action in ("upload", "access", "analyze", "export", "delete"):
+        repo.write_audit(_audit(v.id, action))
+
+    comp = calculate_audit_completeness(v.id, repo)
+    assert comp["missing_actions"] == []
+    assert all(comp[a]["present"] for a in ("upload", "access", "analyze", "export", "delete"))
+
+
+# ---------------------------------------------------------------------------
+# P-A. export 안전성 (민감 경로 제외 + 신규 지표 + 가드)
+# ---------------------------------------------------------------------------
+
+def _assert_no_sensitive_substrings(text: str) -> None:
+    for frag in ("stored_path", "image_path",
+                 "data/videos", "data/frames",
+                 "data\\videos", "data\\frames"):
+        assert frag not in text, f"export에 민감 문자열 포함: {frag!r}"
+
+
+def test_export_json_excludes_sensitive_paths(repo, seeded):
+    v, _, _ = seeded
+    _assert_no_sensitive_substrings(export_report_json(v.id, repo))
+
+
+def test_export_csv_excludes_sensitive_paths(repo, seeded):
+    v, _, _ = seeded
+    _assert_no_sensitive_substrings(export_report_csv(v.id, repo))
+
+
+def test_export_json_has_new_metrics(repo, seeded):
+    import json as _json
+    v, _, _ = seeded
+    data = _json.loads(export_report_json(v.id, repo))
+    summary = data["summary"]
+    assert "scene_count" in summary
+    assert "frame_count" in summary
+    assert "kept_frame_count" in summary
+    assert "candidate_retention" in data
+    assert "audit_completeness" in data
+
+
+def test_export_json_guard_raises_on_injected_path(repo):
+    """확정 행동 서술에 민감 경로가 섞이면 export 가드가 차단한다(defense-in-depth)."""
+    v = _make_video("vid_guard")
+    repo.save_video(v)
+    scene = _make_scene(v.id, 0)
+    repo.add_scenes([scene])
+    cand = _make_candidate(v.id, scene.id, "child_A", 0)
+    repo.add_candidates([cand])
+    bad = FinalRecord(
+        id=f"final_{cand.id}", candidate_id=cand.id, pseudonym_id="child_001",
+        final_behavior="원본 위치 data/videos/leak.mp4 참조",  # 민감 경로 주입
+        confirmed_areas=[], confirmed_items=[], decision="accepted",
+        edited=False, confirmed_by="teacher_demo", confirmed_at=datetime.now(),
+    )
+    repo.save_final_record(bad)
+
+    with pytest.raises(ValueError, match="민감 경로"):
+        export_report_json(v.id, repo)

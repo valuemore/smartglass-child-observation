@@ -179,6 +179,70 @@ else:
 
 st.divider()
 
+# ─── 7b. 전처리 요약 ─────────────────────────────────────────────────────────
+st.subheader("🎞 전처리 요약")
+st.caption("영상 전처리 단계의 장면·프레임 산출 결과입니다.")
+p1, p2, p3 = st.columns(3)
+p1.metric("장면 수", report.get("scene_count", 0))
+p2.metric("추출 프레임", report.get("frame_count", 0))
+p3.metric("품질 통과 프레임", report.get("kept_frame_count", 0))
+
+st.divider()
+
+# ─── 7c. AI 후보 유지율 ──────────────────────────────────────────────────────
+st.subheader("🔁 AI 후보 유지율")
+st.caption(
+    "AI가 제시한 누리 영역·KICCE 문항 후보 중 교사가 확정에 유지한 비율입니다. "
+    "AI 성능 점수가 아니라 교사 판단 기여도(워크플로우) 지표입니다."
+)
+ret = report.get("candidate_retention", {})
+r1, r2 = st.columns(2)
+r1.metric(
+    "누리 영역 후보 유지율",
+    f"{ret.get('nuri_retention_rate', 0.0)*100:.1f}%",
+    help=f"유지 {ret.get('nuri_retained', 0)} / 제시 {ret.get('nuri_suggested', 0)}",
+)
+r2.metric(
+    "KICCE 문항 후보 유지율",
+    f"{ret.get('kicce_retention_rate', 0.0)*100:.1f}%",
+    help=f"유지 {ret.get('kicce_retained', 0)} / 제시 {ret.get('kicce_suggested', 0)}",
+)
+if ret.get("nuri_suggested", 0) == 0 and ret.get("kicce_suggested", 0) == 0:
+    st.info(
+        "AI 제시 후보(누리·KICCE 매핑)가 없어 유지율을 계산할 수 없습니다. "
+        "'업로드 & 분석' 화면에서 누리·KICCE 후보 매핑을 먼저 실행하세요."
+    )
+
+st.divider()
+
+# ─── 7d. 감사 로그 완전성 ────────────────────────────────────────────────────
+st.subheader("🛡 감사 로그 완전성")
+st.caption("이 영상에 대해 upload·access·analyze·export·delete 액션이 기록됐는지 점검합니다.")
+audit_comp = report.get("audit_completeness", {})
+_ACTION_LABEL = {
+    "upload": "업로드", "access": "접근", "analyze": "분석",
+    "export": "내보내기", "delete": "삭제",
+}
+audit_rows = [
+    {
+        "액션": f"{_ACTION_LABEL.get(a, a)} ({a})",
+        "기록 여부": "✅ 기록됨" if audit_comp.get(a, {}).get("present") else "⚠️ 없음",
+        "건수": audit_comp.get(a, {}).get("count", 0),
+    }
+    for a in ("upload", "access", "analyze", "export", "delete")
+]
+st.dataframe(pd.DataFrame(audit_rows), use_container_width=True, hide_index=True)
+missing = audit_comp.get("missing_actions", [])
+if missing:
+    st.warning(
+        "미기록 액션: " + ", ".join(missing)
+        + " — 해당 동작을 아직 수행하지 않았거나 계측되지 않았을 수 있습니다."
+    )
+else:
+    st.success("5종 감사 액션이 모두 기록되어 있습니다.")
+
+st.divider()
+
 # ─── 8. Export ────────────────────────────────────────────────────────────────
 st.subheader("💾 리포트 내보내기")
 st.caption("원본 영상 경로·프레임 이미지 경로는 포함되지 않습니다.")
