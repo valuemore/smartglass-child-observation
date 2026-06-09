@@ -98,10 +98,12 @@ def assert_no_sensitive_paths(payload: Any, _path: str = "root") -> None:
     """payload 전체를 재귀 순회해 민감 경로가 포함되면 ValueError를 발생시킨다.
 
     외부 API 전송 직전 사전 검증용.
+    Windows 백슬래시 경로(data\\videos 등)도 탐지하기 위해 구분자를 정규화한다.
     """
     if isinstance(payload, str):
+        normalized = _normalize_separators(payload)
         for fragment in _SENSITIVE_FRAGMENTS:
-            if fragment in payload:
+            if fragment in normalized:
                 raise ValueError(
                     f"민감 경로가 payload에 포함되었습니다 [{_path}]: {fragment!r}"
                 )
@@ -113,5 +115,11 @@ def assert_no_sensitive_paths(payload: Any, _path: str = "root") -> None:
             assert_no_sensitive_paths(item, _path=f"{_path}[{i}]")
 
 
+def _normalize_separators(value: str) -> str:
+    """경로 구분자를 슬래시로 통일한다(Windows 백슬래시 → 슬래시)."""
+    return value.replace("\\", "/")
+
+
 def _has_sensitive_fragment(value: str) -> bool:
-    return any(fragment in value for fragment in _SENSITIVE_FRAGMENTS)
+    normalized = _normalize_separators(value)
+    return any(fragment in normalized for fragment in _SENSITIVE_FRAGMENTS)

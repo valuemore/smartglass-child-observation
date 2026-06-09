@@ -195,3 +195,27 @@ def test_assert_passes_clean_payload() -> None:
         "summary": {"total_candidates": 3, "accepted": 2},
     }
     assert_no_sensitive_paths(payload)  # ValueError 없이 통과
+
+
+# T8. Windows 백슬래시 경로(data\videos, data\frames)도 탐지 (F-1)
+# ---------------------------------------------------------------------------
+
+def test_assert_raises_on_windows_backslash_videos_path() -> None:
+    payload = {"stored_path": "data\\videos\\vid_001\\original.mp4"}
+    with pytest.raises(ValueError, match="민감 경로"):
+        assert_no_sensitive_paths(payload)
+
+
+def test_assert_raises_on_windows_backslash_frames_path() -> None:
+    payload = {"frames": ["data\\frames\\vid_001\\seg_001\\frm_001.jpg"]}
+    with pytest.raises(ValueError, match="민감 경로"):
+        assert_no_sensitive_paths(payload)
+
+
+def test_sanitize_removes_windows_backslash_path_value() -> None:
+    cleaned = sanitize_report_export({
+        "video_id": "vid_001",
+        "image_path_win": "data\\frames\\vid_001\\frm_001.jpg",
+    })
+    assert "image_path_win" not in cleaned
+    assert cleaned["video_id"] == "vid_001"

@@ -54,6 +54,28 @@ def test_empty_result_on_dry_run(tmp_path):
     assert adapter._last_discarded == 0
 
 
+def test_dry_run_still_validates_payload(tmp_path):
+    """dry_run=True 여도 payload 빌드·안전성 검증을 수행한다(안전 리허설).
+
+    프레임 image_ref가 영상 확장자(.mp4)이면 dry_run에서도 ValueError가 발생해야 한다.
+    """
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"\x00\x00\x00\x18ftyp" + b"X" * 100)
+    req = SegmentAnalysisRequest(
+        video_id="vid_t",
+        segment_id="seg_t",
+        time_start=0.0,
+        time_end=5.0,
+        frames=[FrameRef(frame_id="f_00", t=0.0, image_ref=str(mp4))],
+    )
+    adapter = ExternalVisionAdapter(model="gpt-4o", api_key="dummy", dry_run=True)
+
+    # dry_run 이어도 build_external_payload 단계에서 영상 확장자를 거부해야 한다
+    with patch.object(adapter, "_call_api", side_effect=AssertionError("API 호출 금지")):
+        with pytest.raises(ValueError, match="영상 파일 확장자"):
+            adapter.analyze_segment(req)
+
+
 def test_missing_api_key_dry_run_false_raises():
     """dry_run=False이고 api_key가 없으면 ValueError."""
     with pytest.raises(ValueError, match="api_key"):

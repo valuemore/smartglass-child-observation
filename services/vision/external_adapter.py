@@ -47,15 +47,29 @@ class ExternalVisionAdapter:
     # ------------------------------------------------------------------
 
     def analyze_segment(self, request: SegmentAnalysisRequest) -> SegmentAnalysisResult:
-        """구간 분석. dry_run=True 시 네트워크 호출 없이 빈 결과를 반환한다."""
+        """구간 분석.
+
+        dry_run 여부와 무관하게 payload 빌드 + 안전성 게이트를 먼저 수행한다.
+        - dry_run=True: 안전성 검증까지만 수행하고 실제 API는 호출하지 않으며 빈 결과를 반환한다.
+          (전송될 payload가 안전한지 미리 점검하는 '안전 리허설' 용도)
+        - dry_run=False: 검증 통과 후 실제 API를 호출한다.
+        payload 빌드/검증에서 위반이 발견되면 ValueError가 발생해 호출이 차단된다.
+        """
         self._last_discarded = 0
+
+        # 1. payload 빌드 (dry_run에서도 수행)
+        payload = build_external_payload(request)
+
+        # 2. 안전성 게이트 — 위반 시 ValueError로 호출 차단 (dry_run에서도 수행)
+        assert_safe_outbound_payload(payload)
 
         if self._dry_run:
             logger.info(
-                "dry_run=True: 외부 API 호출 없이 빈 결과 반환. "
-                "segment_id=%s, model=%s",
+                "dry_run=True: payload 빌드·안전성 검증 통과, 실제 API 호출은 생략. "
+                "segment_id=%s, model=%s, images=%d",
                 request.segment_id,
                 self._model,
+                len(payload.get("images", [])),
             )
             return SegmentAnalysisResult(
                 segment_id=request.segment_id,
@@ -64,13 +78,7 @@ class ExternalVisionAdapter:
                 observations=[],
             )
 
-        # 1. payload 빌드
-        payload = build_external_payload(request)
-
-        # 2. 안전성 게이트 — 위반 시 ValueError로 호출 차단
-        assert_safe_outbound_payload(payload)
-
-        # 3. 실제 API 호출
+        # 3. 실제 API 호출 (dry_run=False일 때만)
         raw_response = self._call_api(payload)
 
         # 4. 응답 파싱 및 검증
