@@ -103,3 +103,30 @@ def test_api_key_pattern_rejected():
     p["instruction_context"]["debug"] = "sk-abcdefghijklmnopqrstuvwxyz123456"
     with pytest.raises(ValueError, match="API 키 패턴"):
         assert_safe_outbound_payload(p)
+
+
+def test_webm_extension_in_value_rejected():
+    """값에 .webm 확장자 문자열이 있으면 ValueError (F-3: builder와 동기화)."""
+    p = _clean_payload()
+    p["instruction_context"]["debug"] = "clip.webm"
+    with pytest.raises(ValueError, match=r"\.webm"):
+        assert_safe_outbound_payload(p)
+
+
+def test_data_b64_value_exempt_from_scan():
+    """data_b64 값은 스캔 대상에서 제외된다 (F-4: 오탐·성능 방지).
+
+    base64 데이터에 API 키 패턴·민감 경로처럼 보이는 문자열이 우연히 포함돼도 통과해야 한다.
+    """
+    p = _clean_payload()
+    # API 키 패턴 + 경로처럼 보이는 문자열을 base64 값에 넣어도 차단되지 않아야 함
+    p["images"][0]["data_b64"] = "sk-abcdefghijklmnopqrstuvwxyz123456data/videos"
+    assert_safe_outbound_payload(p)  # 예외 없이 통과
+
+
+def test_forbidden_key_inside_image_still_rejected():
+    """data_b64를 제외해도 image 내 금지 키(image_ref 등)는 여전히 차단된다."""
+    p = _clean_payload()
+    p["images"][0]["image_ref"] = "/some/path.jpg"
+    with pytest.raises(ValueError):
+        assert_safe_outbound_payload(p)

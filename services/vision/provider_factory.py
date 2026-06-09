@@ -69,7 +69,7 @@ def _try_build_external() -> tuple[VisionAdapter, dict]:
             api_key=VISION_API_KEY,
             dry_run=VISION_DRY_RUN,
         )
-    except (ValueError, Exception) as e:
+    except Exception as e:
         reason = f"ExternalVisionAdapter 생성 실패({e}), mock으로 폴백합니다."
         logger.warning(reason)
         return _mock_adapter(fallback_reason=reason)

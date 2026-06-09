@@ -96,12 +96,12 @@ def parse_external_response(
         obs["video_id"] = request.video_id
         obs["scene_id"] = request.segment_id
 
-        # needs_teacher_review 강제
-        obs["needs_teacher_review"] = True
-        if data.get("needs_teacher_review") is False:
+        # needs_teacher_review 강제 (외부 응답값 무시) — 보정 전 개별 후보 값을 기준으로 경고
+        if obs.get("needs_teacher_review") is False:
             warnings.append(
                 f"observations[{i}]: needs_teacher_review=False → True로 강제 보정."
             )
+        obs["needs_teacher_review"] = True
 
         # temp_child_id 정규화
         raw_cid = obs.get("temp_child_id", "")

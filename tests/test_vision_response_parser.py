@@ -44,11 +44,20 @@ def test_valid_response_parsed():
 
 
 def test_needs_teacher_review_forced_true():
-    """needs_teacher_review=False 이더라도 True로 강제되어야 한다."""
+    """needs_teacher_review=False 이더라도 True로 강제되고 경고가 기록되어야 한다(F-5)."""
     raw = {"observations": [_valid_obs(needs_teacher_review=False)]}
     result = parse_external_response(raw, _req())
     cand = result.result.observations[0]
     assert cand.needs_teacher_review is True
+    # 개별 후보 값(False)을 기준으로 경고가 발생해야 한다
+    assert any("needs_teacher_review" in w for w in result.warnings)
+
+
+def test_needs_teacher_review_no_warning_when_true():
+    """needs_teacher_review가 True(또는 미지정)이면 보정 경고가 없어야 한다(F-5)."""
+    raw = {"observations": [_valid_obs(needs_teacher_review=True)]}
+    result = parse_external_response(raw, _req())
+    assert not any("needs_teacher_review" in w for w in result.warnings)
 
 
 def test_score_field_rejected():
