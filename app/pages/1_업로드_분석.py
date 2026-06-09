@@ -3,6 +3,7 @@ import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 import streamlit as st
 
 from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR
+from services.observation_service import generate_mock_observation_candidates
 from services.video_service import save_uploaded_video
 from services.video_preprocess_service import preprocess_video
 from storage.sqlite_repository import SqliteRepository
@@ -43,7 +44,7 @@ repo = get_repo()
 
 
 # ---------------------------------------------------------------------------
-# 헬퍼 — 섹션 2 호출보다 먼저 정의
+# 헬퍼 — 섹션 2·3 호출보다 먼저 정의
 # ---------------------------------------------------------------------------
 def _show_thumbnails(frames: list, title: str = "추출 프레임", max_items: int = 12) -> None:
     """품질 통과(kept=True) 프레임 썸네일을 최대 max_items 장 표시한다."""
@@ -66,6 +67,35 @@ def _show_thumbnails(frames: list, title: str = "추출 프레임", max_items: i
             )
         else:
             col.caption(f"t={frm.t:.1f}s (파일 없음)")
+
+
+def _show_candidate_card(cand) -> None:
+    """AI 관찰 후보 1건을 카드 형태로 표시한다. 점수 필드 없음."""
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"**관찰 행동**: {cand.observed_behavior}")
+        st.markdown(f"**시각적 근거**: {cand.visual_evidence}")
+        if cand.activity_context:
+            st.markdown(f"**활동 맥락**: {cand.activity_context}")
+        if cand.peer_relation:
+            st.markdown(f"**또래 관계**: {cand.peer_relation}")
+        if cand.interaction:
+            parts = []
+            if cand.interaction.with_peers:
+                parts.append(f"또래: {cand.interaction.with_peers}")
+            if cand.interaction.with_teacher:
+                parts.append(f"교사: {cand.interaction.with_teacher}")
+            if cand.interaction.with_materials:
+                parts.append(f"자료: {cand.interaction.with_materials}")
+            if parts:
+                st.markdown("**상호작용**: " + " | ".join(parts))
+        if cand.audio_support:
+            st.caption(f"보조 오디오: {cand.audio_support}")
+    with col2:
+        st.metric("임시 유아 ID", cand.temp_child_id)
+        st.metric("신뢰도", f"{cand.confidence:.2f}")
+        if cand.needs_teacher_review:
+            st.warning("교사 확인 필요")
 
 
 # ===========================================================================
@@ -212,20 +242,79 @@ st.divider()
 
 
 # ===========================================================================
-# 섹션 3: 비전 분석 (P2 예정)
+# 섹션 3: Mock 비전 관찰 후보 생성
 # ===========================================================================
-st.subheader("3단계: 비전 모델 분석 (예정)")
+st.subheader("3단계: Mock 비전 관찰 후보 생성")
 st.info(
-    "**구현 예정 (P2 단계)**\n\n"
-    "- 비전 LLM API에 선별 프레임 전송 (원본 영상 미전송)\n"
-    "- 구간별 관찰 후보 JSON 생성 및 Pydantic 검증\n"
-    "- 누리과정 5영역 분류 및 KICCE 문항 후보 매핑"
+    "전처리 완료된 영상에서 Mock 비전 어댑터로 관찰 후보를 생성합니다. "
+    "실제 비전 LLM API는 호출되지 않습니다. "
+    "AI는 후보를 제시하고 교사가 검토·확정합니다."
 )
-st.button(
-    "🔍 비전 분석 시작",
-    disabled=True,
-    help="P2 단계에서 구현됩니다. 현재 비활성화 상태입니다.",
-)
+
+videos_with_scenes = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
+
+if not videos_with_scenes:
+    st.warning(
+        "전처리 완료된 영상이 없습니다. "
+        "먼저 2단계에서 장면 분할 및 프레임 추출을 완료해주세요."
+    )
+else:
+    mock_options = {f"{v.filename}  [{v.id}]": v.id for v in videos_with_scenes}
+    mock_label = st.selectbox(
+        "Mock 분석할 영상을 선택하세요",
+        options=list(mock_options.keys()),
+        key="mock_vision_select",
+    )
+    mock_video_id = mock_options[mock_label]
+
+    # ── 기존 후보 표시 ─────────────────────────────────────────────────
+    existing_cands = repo.list_candidates(mock_video_id)
+    if existing_cands:
+        st.success(f"AI 관찰 후보 (교사 검토 전): 이미 {len(existing_cands)}개 생성됨")
+        for cand in existing_cands:
+            with st.expander(
+                f"[{cand.temp_child_id}]  {cand.time_start:.1f}s – {cand.time_end:.1f}s"
+                f"  | 신뢰도 {cand.confidence:.2f}",
+                expanded=False,
+            ):
+                _show_candidate_card(cand)
+
+    mock_btn = st.button(
+        "🔍 Mock 비전 관찰 후보 생성",
+        key="run_mock_vision",
+        help="실제 외부 API를 호출하지 않는 Mock 분석입니다.",
+    )
+
+    if mock_btn:
+        new_cands = None
+        with st.spinner("Mock 비전 분석 중..."):
+            try:
+                new_cands = generate_mock_observation_candidates(
+                    video_id=mock_video_id,
+                    repo=repo,
+                    actor=DEFAULT_ACTOR,
+                )
+            except Exception as e:
+                st.error(f"Mock 비전 분석 실패: {e}")
+
+        if new_cands is not None:
+            if new_cands:
+                st.success(
+                    f"AI 관찰 후보 (교사 검토 전) {len(new_cands)}개가 생성되었습니다."
+                )
+                for cand in new_cands:
+                    with st.expander(
+                        f"[{cand.temp_child_id}]  {cand.time_start:.1f}s – {cand.time_end:.1f}s"
+                        f"  | 신뢰도 {cand.confidence:.2f}",
+                        expanded=True,
+                    ):
+                        _show_candidate_card(cand)
+                st.markdown("**감사 로그**: Mock 분석(analyze) 기록이 저장되었습니다. ✅")
+            else:
+                st.warning(
+                    "생성된 관찰 후보가 없습니다. "
+                    "2단계에서 품질 통과(kept=True) 프레임이 추출되었는지 확인해주세요."
+                )
 
 st.divider()
 st.caption(

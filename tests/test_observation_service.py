@@ -1,0 +1,217 @@
+"""generate_mock_observation_candidates 단위 테스트.
+
+원칙:
+- tmp_path 만 사용. data/ 아래 실제 경로에 절대 쓰지 않는다.
+- cv2 미설치 시 모듈 전체 skip.
+"""
+
+import sys
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+import numpy as np
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core.schemas import Frame, Scene, Video
+from services.observation_service import generate_mock_observation_candidates
+from storage.sqlite_repository import SqliteRepository
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def repo(tmp_path: Path) -> SqliteRepository:
+    r = SqliteRepository(str(tmp_path / "test.db"))
+    r.init_schema()
+    return r
+
+
+def _make_video(tmp_path: Path, suffix: str = "") -> Video:
+    path = tmp_path / f"dummy{suffix}.mp4"
+    path.write_bytes(b"\x00" * 16)
+    return Video(
+        id=f"vid_test_{uuid.uuid4().hex[:6]}",
+        filename=path.name,
+        stored_path=str(path),
+        duration_sec=5.0,
+        fps=30.0,
+        width=640,
+        height=480,
+        status="analyzed",
+        created_at=datetime.now(),
+        retention_until=datetime.now() + timedelta(days=180),
+    )
+
+
+def _make_frame_image(frame_dir: Path, name: str = "frm_000.jpg") -> Path:
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    path = frame_dir / name
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.imwrite(str(path), img)
+    return path
+
+
+@pytest.fixture()
+def video_with_kept_frame(repo: SqliteRepository, tmp_path: Path) -> Video:
+    """video + scene + kept=True frame 1개가 저장된 상태."""
+    v = _make_video(tmp_path)
+    repo.save_video(v)
+
+    scene = Scene(
+        id=f"scene_{v.id}_0000",
+        video_id=v.id,
+        time_start=0.0,
+        time_end=5.0,
+        detector="fallback_fixed",
+    )
+    repo.add_scenes([scene])
+
+    img_path = _make_frame_image(tmp_path / "frames" / v.id / scene.id)
+    frame = Frame(
+        id=f"frm_{scene.id}_000",
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=60.0,
+        kept=True,
+    )
+    repo.add_frames([frame])
+    return v
+
+
+@pytest.fixture()
+def video_no_kept_frames(repo: SqliteRepository, tmp_path: Path) -> Video:
+    """video + scene + kept=False frame 만 있는 상태."""
+    v = _make_video(tmp_path, suffix="_nokeep")
+    repo.save_video(v)
+
+    scene = Scene(
+        id=f"scene_{v.id}_0000",
+        video_id=v.id,
+        time_start=0.0,
+        time_end=5.0,
+        detector="fallback_fixed",
+    )
+    repo.add_scenes([scene])
+
+    img_path = _make_frame_image(tmp_path / "frames" / v.id / scene.id, "frm_001.jpg")
+    frame = Frame(
+        id=f"frm_{scene.id}_000",
+        scene_id=scene.id,
+        t=2.5,
+        image_path=str(img_path),
+        blur_score=10.0,
+        kept=False,
+    )
+    repo.add_frames([frame])
+    return v
+
+
+# ---------------------------------------------------------------------------
+# 1. 후보가 DB에 저장되어야 한다
+# ---------------------------------------------------------------------------
+
+def test_candidates_saved_to_db(repo: SqliteRepository, video_with_kept_frame: Video):
+    candidates = generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    assert len(candidates) >= 1
+    saved = repo.list_candidates(video_with_kept_frame.id)
+    assert len(saved) == len(candidates)
+
+
+# ---------------------------------------------------------------------------
+# 2. audit_log 에 mock_vision_candidate_generation 이 기록되어야 한다
+# ---------------------------------------------------------------------------
+
+def test_audit_log_recorded(repo: SqliteRepository, video_with_kept_frame: Video):
+    generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    logs = repo.list_audit_logs(video_with_kept_frame.id)
+    analyze_logs = [l for l in logs if l.action == "analyze"]
+    assert len(analyze_logs) >= 1
+    mock_log = next(
+        (l for l in analyze_logs if "mock_vision_candidate_generation" in (l.detail or "")),
+        None,
+    )
+    assert mock_log is not None, "audit_log 에 mock_vision_candidate_generation 없음"
+
+
+# ---------------------------------------------------------------------------
+# 3. kept=False 프레임만 있으면 빈 리스트 반환 (오류 없음)
+# ---------------------------------------------------------------------------
+
+def test_empty_when_no_kept_frames(repo: SqliteRepository, video_no_kept_frames: Video):
+    candidates = generate_mock_observation_candidates(
+        video_no_kept_frames.id, repo, actor="test_actor"
+    )
+    assert candidates == [], "kept 프레임 없으면 빈 리스트여야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 4. scene 이 없으면 빈 리스트 반환 (오류 없음)
+# ---------------------------------------------------------------------------
+
+def test_empty_when_no_scenes(repo: SqliteRepository, tmp_path: Path):
+    v = _make_video(tmp_path, suffix="_noscene")
+    repo.save_video(v)
+    candidates = generate_mock_observation_candidates(v.id, repo, actor="test_actor")
+    assert candidates == [], "scene 없으면 빈 리스트여야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 5. 없는 video_id 는 ValueError
+# ---------------------------------------------------------------------------
+
+def test_invalid_video_raises(repo: SqliteRepository):
+    with pytest.raises(ValueError, match="video_id="):
+        generate_mock_observation_candidates("nonexistent_vid_xxx", repo)
+
+
+# ---------------------------------------------------------------------------
+# 6. 저장된 후보가 ObservationCandidate 타입으로 복원되어야 한다
+# ---------------------------------------------------------------------------
+
+def test_candidate_restored_as_schema(repo: SqliteRepository, video_with_kept_frame: Video):
+    from core.schemas import ObservationCandidate
+    generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    saved = repo.list_candidates(video_with_kept_frame.id)
+    for c in saved:
+        assert isinstance(c, ObservationCandidate)
+        assert c.video_id == video_with_kept_frame.id
+        assert c.needs_teacher_review is True
+        assert 0.0 <= c.confidence <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# 7. 커스텀 어댑터를 주입할 수 있어야 한다
+# ---------------------------------------------------------------------------
+
+def test_custom_adapter_injection(repo: SqliteRepository, video_with_kept_frame: Video):
+    """adapter 파라미터로 커스텀 Mock을 주입할 수 있어야 한다."""
+    from services.vision.mock_adapter import MockVisionAdapter
+
+    class CountingAdapter(MockVisionAdapter):
+        call_count: int = 0
+
+        def analyze_segment(self, request):
+            self.call_count += 1
+            return super().analyze_segment(request)
+
+    custom = CountingAdapter()
+    generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, adapter=custom, actor="test_actor"
+    )
+    assert custom.call_count >= 1, "커스텀 어댑터가 호출되어야 한다"
