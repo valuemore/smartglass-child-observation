@@ -186,3 +186,20 @@ def test_segment_analysis_result_empty_observations():
         time_end=145.0,
     )
     assert result.observations == []
+
+
+# ---------------------------------------------------------------------------
+# 테스트 7: ObservationCandidate 외부 필드 주입 차단
+# ---------------------------------------------------------------------------
+
+def test_observation_candidate_rejects_extra_fields():
+    """ConfigDict(extra='forbid')로 score 등 금지 필드가 주입되면 ValidationError."""
+    from pydantic import ValidationError as PydanticValidationError
+    with pytest.raises(PydanticValidationError):
+        ObservationCandidate(**_valid_candidate(score=0.9))
+
+    with pytest.raises(PydanticValidationError):
+        ObservationCandidate(**_valid_candidate(level="high"))
+
+    with pytest.raises(PydanticValidationError):
+        ObservationCandidate(**_valid_candidate(rating=3))

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,7 @@ class AudioSegment(BaseModel):
 # ---------------------------------------------------------------------------
 
 class InteractionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     with_peers: Optional[str] = None
     with_teacher: Optional[str] = None
     with_materials: Optional[str] = None
@@ -111,6 +112,7 @@ class InteractionEvidence(BaseModel):
 # ---------------------------------------------------------------------------
 
 class NuriAreaCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     area: str
     rationale: str
     confidence: float = Field(ge=0.0, le=1.0)
@@ -121,6 +123,7 @@ class NuriAreaCandidate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class KicceItemCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     item_id: Optional[int] = None
     item_text: str
     rationale: str
@@ -152,6 +155,7 @@ class ScaleMappingCandidate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ObservationCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # 외부 응답의 점수·실명 필드 주입 즉시 거부
     id: str
     video_id: str
     scene_id: str

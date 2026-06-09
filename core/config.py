@@ -13,3 +13,15 @@ FALLBACK_SCENE_INTERVAL_SEC = 10.0          # PySceneDetect 실패 시 고정 �
 
 APP_TITLE = "스마트안경 기반 유아 관찰기록 지원 시스템"
 APP_CAPTION = "교사 시점 영상 분석 기반 관찰기록 초안 생성 연구용 시연 시스템"
+
+# ---------------------------------------------------------------------------
+# 비전 API 설정 — API 키는 절대 여기에 하드코딩하지 않는다 (.env 사용)
+# ---------------------------------------------------------------------------
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "mock")   # "mock" | "external"
+VISION_MODEL    = os.getenv("VISION_MODEL", "")           # 예: "gpt-4o", "gemini-1.5-pro"
+VISION_DRY_RUN  = os.getenv("VISION_DRY_RUN", "true").lower() == "true"  # 기본 true (실호출 방지)
+VISION_API_KEY  = os.getenv("VISION_API_KEY", "")        # 절대 하드코딩 금지
+VISION_MAX_FRAMES_PER_SEGMENT = int(os.getenv("VISION_MAX_FRAMES_PER_SEGMENT", "4"))
+VISION_MAX_IMAGE_BYTES   = int(os.getenv("VISION_MAX_IMAGE_BYTES",  str(1 * 1024 * 1024)))   # 1 MB
+VISION_MAX_PAYLOAD_BYTES = int(os.getenv("VISION_MAX_PAYLOAD_BYTES", str(20 * 1024 * 1024))) # 20 MB
+VISION_EXTERNAL_CONFIRM_REQUIRED = os.getenv("VISION_EXTERNAL_CONFIRM_REQUIRED", "true").lower() == "true"
