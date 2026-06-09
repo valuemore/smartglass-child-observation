@@ -304,6 +304,23 @@ class SqliteRepository:
             ).fetchall()
         return [_row_to_candidate(r) for r in rows]
 
+    def delete_candidates_for_video(self, video_id: str) -> None:
+        # 연결된 scale_mapping 을 먼저 삭제한 뒤 관찰 후보를 삭제한다(고아 매핑 방지).
+        with self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM scale_mapping
+                WHERE candidate_id IN (
+                    SELECT id FROM observation_candidate WHERE video_id = ?
+                )
+                """,
+                (video_id,),
+            )
+            conn.execute(
+                "DELETE FROM observation_candidate WHERE video_id = ?",
+                (video_id,),
+            )
+
     # ------------------------------------------------------------------
     # ScaleMappingCandidate
     # ------------------------------------------------------------------

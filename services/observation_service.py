@@ -23,6 +23,7 @@ def generate_mock_observation_candidates(
     - kept=True 프레임이 없는 scene 은 건너뜀(오류 없음).
     - 전체 후보가 0개이면 빈 리스트 반환(오류 없음).
     - 없는 video_id 는 ValueError.
+    - 재실행 시 중복 누적을 막기 위해 기존 후보(+연결 매핑)를 먼저 삭제한다.
     """
     if adapter is None:
         adapter = MockVisionAdapter()
@@ -30,6 +31,9 @@ def generate_mock_observation_candidates(
     video = repo.get_video(video_id)
     if video is None:
         raise ValueError(f"video_id={video_id} 를 찾을 수 없습니다.")
+
+    # 중복 방지: 이 영상의 기존 관찰 후보와 연결된 매핑을 먼저 삭제한다.
+    repo.delete_candidates_for_video(video_id)
 
     scenes = repo.list_scenes(video_id)
     all_candidates: list[ObservationCandidate] = []

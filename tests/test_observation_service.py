@@ -344,3 +344,58 @@ def test_kept_updated_via_upsert_generates_candidates(repo: SqliteRepository, tm
     # 이제 후보가 생성되어야 한다
     candidates = generate_mock_observation_candidates(v.id, repo, actor="test")
     assert len(candidates) >= 1, "upsert 후 kept=True 프레임이 있으면 후보가 생성되어야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 11. 재실행해도 관찰 후보가 중복 누적되지 않는다
+# ---------------------------------------------------------------------------
+
+def test_no_duplicate_candidates_on_rerun(repo: SqliteRepository, video_with_kept_frame: Video):
+    """generate_mock_observation_candidates 를 두 번 실행해도 후보가 누적되지 않아야 한다."""
+    first = generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    first_saved = repo.list_candidates(video_with_kept_frame.id)
+    assert len(first_saved) == len(first)
+
+    # 재실행 — 기존 후보 삭제 후 재생성되므로 개수가 누적되지 않아야 한다
+    second = generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    second_saved = repo.list_candidates(video_with_kept_frame.id)
+    assert len(second_saved) == len(second), "재실행 시 후보가 중복 저장되면 안 된다"
+    assert len(second_saved) == len(first_saved), "재실행 후 후보 개수가 동일해야 한다"
+
+
+# ---------------------------------------------------------------------------
+# 12. 후보 재생성 시 연결된 매핑도 함께 삭제된다 (고아 매핑 방지)
+# ---------------------------------------------------------------------------
+
+def test_rerun_clears_linked_mappings(repo: SqliteRepository, video_with_kept_frame: Video):
+    """후보에 매핑이 있는 상태에서 후보를 재생성하면 기존 매핑이 정리되어야 한다."""
+    from core.schemas import ScaleMappingCandidate
+
+    cands = generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    assert len(cands) >= 1
+    old_id = cands[0].id
+
+    # 임의 매핑 1건 저장
+    repo.add_mappings([ScaleMappingCandidate(
+        id="map_test_0001",
+        candidate_id=old_id,
+        scale="nuri",
+        area="자연탐구",
+        item_id=None,
+        item_text="자연탐구",
+        rationale="테스트",
+        confidence=0.7,
+    )])
+    assert len(repo.list_mappings(old_id)) == 1
+
+    # 후보 재생성 — 기존 후보 삭제 시 연결 매핑도 삭제되어야 한다
+    generate_mock_observation_candidates(
+        video_with_kept_frame.id, repo, actor="test_actor"
+    )
+    assert repo.list_mappings(old_id) == [], "고아 매핑이 남으면 안 된다"

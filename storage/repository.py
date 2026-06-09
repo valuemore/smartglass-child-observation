@@ -80,6 +80,13 @@ class Repository(Protocol):
         """video_id 에 속한 관찰 후보를 time_start 순으로 반환한다."""
         ...
 
+    def delete_candidates_for_video(self, video_id: str) -> None:
+        """video_id 에 속한 관찰 후보를 모두 삭제한다(후보 재생성 시 중복 방지).
+
+        연결된 scale_mapping 도 함께 삭제해 고아 매핑이 남지 않게 한다.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # ScaleMappingCandidate
     # ------------------------------------------------------------------
