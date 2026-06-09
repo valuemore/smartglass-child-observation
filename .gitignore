@@ -1,0 +1,87 @@
+# === 원본 영상·프레임·오디오·클립 (민감한 데이터) ===
+data/videos/
+data/frames/
+data/audio/
+data/clips/
+
+# === 로컬 DB ===
+data/app.db
+data/*.db
+*.db
+
+# === export 결과 폴더 ===
+data/exports/
+exports/
+
+# === API 키·비밀값 ===
+.env
+.env.local
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# === 가상환경 ===
+venv/
+env/
+ENV/
+.venv
+.env.venv
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+
+# === Streamlit ===
+.streamlit/
+.streamlit/secrets.toml
+
+# === 로그 ===
+*.log
+logs/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === 기타 임시 파일 ===
+*.tmp
+*.temp
+.cache/
+
+# === pytest ===
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === 개발 임시 파일 ===
+test_video.*
+sample_video.*
+debug/
