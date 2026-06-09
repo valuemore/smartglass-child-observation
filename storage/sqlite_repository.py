@@ -207,6 +207,42 @@ class SqliteRepository:
             ).fetchall()
         return [_row_to_video(r) for r in rows]
 
+    def delete_video_cascade(self, video_id: str) -> int:
+        """video와 연관 행 전체를 cascade 삭제한다. audit_log는 보존."""
+        total = 0
+        with self._connect() as conn:
+            c = conn.execute(
+                "DELETE FROM scale_mapping WHERE candidate_id IN "
+                "(SELECT id FROM observation_candidate WHERE video_id = ?)",
+                (video_id,),
+            )
+            total += c.rowcount
+            c = conn.execute(
+                "DELETE FROM final_record WHERE candidate_id IN "
+                "(SELECT id FROM observation_candidate WHERE video_id = ?)",
+                (video_id,),
+            )
+            total += c.rowcount
+            c = conn.execute(
+                "DELETE FROM observation_candidate WHERE video_id = ?", (video_id,)
+            )
+            total += c.rowcount
+            c = conn.execute(
+                "DELETE FROM frame WHERE scene_id IN "
+                "(SELECT id FROM scene WHERE video_id = ?)",
+                (video_id,),
+            )
+            total += c.rowcount
+            c = conn.execute("DELETE FROM scene WHERE video_id = ?", (video_id,))
+            total += c.rowcount
+            c = conn.execute("DELETE FROM child_match WHERE video_id = ?", (video_id,))
+            total += c.rowcount
+            c = conn.execute("DELETE FROM audio_segment WHERE video_id = ?", (video_id,))
+            total += c.rowcount
+            c = conn.execute("DELETE FROM video WHERE id = ?", (video_id,))
+            total += c.rowcount
+        return total
+
     # ------------------------------------------------------------------
     # Scene
     # ------------------------------------------------------------------
@@ -295,6 +331,13 @@ class SqliteRepository:
             ))
         with self._connect() as conn:
             conn.executemany(sql, rows)
+
+    def get_candidate(self, candidate_id: str) -> Optional[ObservationCandidate]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM observation_candidate WHERE id = ?", (candidate_id,)
+            ).fetchone()
+        return _row_to_candidate(row) if row else None
 
     def list_candidates(self, video_id: str) -> list[ObservationCandidate]:
         with self._connect() as conn:

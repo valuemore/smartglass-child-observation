@@ -44,6 +44,15 @@ class Repository(Protocol):
         """저장된 모든 영상을 반환한다."""
         ...
 
+    def delete_video_cascade(self, video_id: str) -> int:
+        """video와 연관 행 전체를 cascade 삭제한다. audit_log는 보존.
+
+        삭제 순서: scale_mapping → final_record → observation_candidate
+                   → frame → scene → child_match → audio_segment → video
+        반환: 삭제된 총 행 수.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # Scene
     # ------------------------------------------------------------------
@@ -74,6 +83,10 @@ class Repository(Protocol):
 
     def add_candidates(self, candidates: list[ObservationCandidate]) -> None:
         """AI 관찰 후보를 일괄 저장한다. 동일 id 는 무시."""
+        ...
+
+    def get_candidate(self, candidate_id: str) -> Optional[ObservationCandidate]:
+        """candidate_id 로 관찰 후보를 조회한다. 없으면 None."""
         ...
 
     def list_candidates(self, video_id: str) -> list[ObservationCandidate]:

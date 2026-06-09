@@ -1,7 +1,8 @@
 import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 import streamlit as st
 
-from core.config import APP_CAPTION, APP_TITLE, DB_PATH
+from core.config import APP_CAPTION, APP_TITLE, DB_PATH, DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR
+from services.security_service import delete_video_and_related_data
 from storage.sqlite_repository import SqliteRepository
 
 st.set_page_config(
@@ -87,6 +88,50 @@ else:
     st.dataframe(rows, use_container_width=True, hide_index=True)
     st.caption(f"총 {len(videos)}개 영상")
 
+    st.divider()
+
+    # ── 영상 삭제 (연구 종료 후 데이터 정리용) ──────────────────────────
+    with st.expander("🗑️ 영상 삭제 (연구 종료 후 데이터 정리용)", expanded=False):
+        st.warning(
+            "삭제하면 원본 영상과 모든 파생 데이터(프레임·관찰 후보·확정 기록 등)가 **영구 삭제**됩니다. "
+            "audit_log(접근·분석·삭제 이력)는 보존됩니다.",
+            icon="⚠️",
+        )
+        del_options = {f"{v.filename}  [{v.id}]": v.id for v in videos}
+        del_label = st.selectbox(
+            "삭제할 영상을 선택하세요",
+            options=list(del_options.keys()),
+            key="del_video_select",
+        )
+        del_video_id = del_options[del_label]
+        confirmed = st.checkbox(
+            "원본 영상과 모든 파생 프레임·관찰 후보·확정 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
+            key="del_confirm_check",
+        )
+        if st.button(
+            "연구용 원본 영상 및 파생 프레임 삭제",
+            disabled=not confirmed,
+            key="del_execute_btn",
+            type="primary",
+        ):
+            try:
+                result = delete_video_and_related_data(
+                    del_video_id, repo,
+                    actor=DEFAULT_ACTOR,
+                    videos_dir=VIDEOS_DIR,
+                    frames_dir=FRAMES_DIR,
+                )
+                st.success(
+                    f"삭제 완료. 감사 로그(action=delete)에 기록되었습니다. "
+                    f"(영상 파일 삭제: {result['file_deleted']}, "
+                    f"프레임 폴더 삭제: {result['frames_dir_deleted']}, "
+                    f"DB 행 삭제: {result['db_rows_deleted']}건)",
+                    icon="✅",
+                )
+                st.rerun()
+            except ValueError as e:
+                st.error(f"삭제 실패: {e}")
+
 st.divider()
 
 # ---------------------------------------------------------------------------
@@ -97,9 +142,9 @@ st.subheader("개발 진행 상태")
 
 col_cur, col_nxt = st.columns(2)
 with col_cur:
-    st.success("**현재 단계**: Home 화면과 저장소 연결", icon="✅")
+    st.success("**완료 단계**: P0–P6 (홈·업로드·비전·매핑·교사검토·연구자리포트)", icon="✅")
 with col_nxt:
-    st.info("**다음 단계**: 영상 업로드 기능 구현", icon="⏭️")
+    st.info("**현재 단계**: P7 보안·삭제·감사 로그 강화", icon="🔒")
 
 st.divider()
 
