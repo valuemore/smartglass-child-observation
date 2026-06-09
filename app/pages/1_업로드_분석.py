@@ -63,7 +63,7 @@ def _show_thumbnails(frames: list, title: str = "추출 프레임", max_items: i
             col.image(
                 str(img_path),
                 caption=f"t={frm.t:.1f}s  blur={frm.blur_score:.0f}",
-                use_container_width=True,
+                width='stretch',
             )
         else:
             col.caption(f"t={frm.t:.1f}s (파일 없음)")
