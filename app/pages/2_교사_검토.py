@@ -1,3 +1,4 @@
+import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 import streamlit as st
 
 st.set_page_config(
