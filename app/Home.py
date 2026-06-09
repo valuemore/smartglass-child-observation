@@ -1,15 +1,110 @@
 import streamlit as st
 
+from core.config import APP_CAPTION, APP_TITLE, DB_PATH
+from storage.sqlite_repository import SqliteRepository
+
 st.set_page_config(
-    page_title="스마트안경 기반 유아 관찰기록 지원 시스템",
+    page_title=APP_TITLE,
     page_icon="👁️",
     layout="wide",
 )
 
-st.title("스마트안경 기반 유아 관찰기록 지원 시스템")
-st.caption("교사 시점 영상 분석 기반 관찰기록 초안 생성 연구용 시연 시스템")
+
+# ---------------------------------------------------------------------------
+# 저장소 초기화 (앱 생애주기 1회, 재실행 시 재사용)
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def get_repo() -> SqliteRepository:
+    repo = SqliteRepository(DB_PATH)
+    repo.init_schema()
+    return repo
+
+
+repo = get_repo()
+
+# ---------------------------------------------------------------------------
+# 헤더
+# ---------------------------------------------------------------------------
+
+st.title(APP_TITLE)
+st.caption(APP_CAPTION)
 
 st.divider()
+
+# ---------------------------------------------------------------------------
+# 안내 배너
+# ---------------------------------------------------------------------------
+
+st.warning(
+    "본 시스템은 스마트안경 교사 시점 영상에서 유아 행동 관찰 후보를 추출하는 **연구용 시연 시스템**입니다.",
+    icon="🔬",
+)
+st.info(
+    "AI 결과는 관찰기록 확정값이 아니라 **교사 검토 전 후보**입니다. 최종 관찰기록은 교사가 검토·수정·확정합니다.",
+    icon="👩‍🏫",
+)
+st.info(
+    "원본 영상 접근과 분석은 **감사 로그에 기록**됩니다.",
+    icon="🔒",
+)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 영상 목록
+# ---------------------------------------------------------------------------
+
+st.subheader("등록된 영상 목록")
+
+videos = repo.list_videos()
+
+if not videos:
+    st.info(
+        "아직 등록된 영상이 없습니다. "
+        "다음 단계에서 영상 업로드 기능을 구현합니다.",
+        icon="📭",
+    )
+else:
+    STATUS_LABEL = {
+        "uploaded":  "업로드됨",
+        "analyzing": "분석 중",
+        "analyzed":  "분석 완료",
+        "reviewed":  "검토 완료",
+    }
+
+    rows = []
+    for v in videos:
+        rows.append({
+            "영상 ID": v.id,
+            "파일명": v.filename,
+            "상태": STATUS_LABEL.get(v.status, v.status),
+            "등록일시": v.created_at.strftime("%Y-%m-%d %H:%M") if v.created_at else "-",
+            "보관 기한": v.retention_until.strftime("%Y-%m-%d") if v.retention_until else "미설정",
+        })
+
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.caption(f"총 {len(videos)}개 영상")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 개발 단계 카드
+# ---------------------------------------------------------------------------
+
+st.subheader("개발 진행 상태")
+
+col_cur, col_nxt = st.columns(2)
+with col_cur:
+    st.success("**현재 단계**: Home 화면과 저장소 연결", icon="✅")
+with col_nxt:
+    st.info("**다음 단계**: 영상 업로드 기능 구현", icon="⏭️")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 시연 흐름
+# ---------------------------------------------------------------------------
 
 st.subheader("시연 흐름")
 
@@ -29,6 +124,10 @@ for i, (step, title, desc) in enumerate(steps):
 
 st.divider()
 
+# ---------------------------------------------------------------------------
+# 핵심 원칙
+# ---------------------------------------------------------------------------
+
 st.subheader("핵심 원칙")
 principles = [
     "AI 분석의 중심 데이터는 **영상**입니다. 오디오는 보조 증거로만 활용합니다.",
@@ -39,6 +138,3 @@ principles = [
 ]
 for p in principles:
     st.markdown(f"- {p}")
-
-st.divider()
-st.caption("⚠️ 현재 상태: 문서 및 골격 구성 단계 · 분석 기능 미구현")

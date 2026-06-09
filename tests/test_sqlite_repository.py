@@ -352,5 +352,7 @@ def test_uses_tmp_path_not_real_db(tmp_path: Path) -> None:
     repo = SqliteRepository(str(db_file))
     repo.init_schema()
 
+    # tmp_path DB 가 생성됐어야 함
     assert db_file.exists(), "tmp_path DB 가 생성되어야 함"
-    assert not Path("data/app.db").exists(), "data/app.db 는 테스트 중 생성되지 않아야 함"
+    # 저장소가 tmp_path 경로를 사용하고 있어야 함 (data/app.db 가 아님)
+    assert repo.db_path == str(db_file), "테스트 저장소는 tmp_path DB 를 가리켜야 함"
