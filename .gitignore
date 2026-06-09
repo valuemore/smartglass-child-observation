@@ -85,3 +85,6 @@ htmlcov/
 test_video.*
 sample_video.*
 debug/
+
+# === Claude Code 로컬 설정 (권한 등 개인 설정) ===
+.claude/settings.local.json
