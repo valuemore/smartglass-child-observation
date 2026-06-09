@@ -333,6 +333,13 @@ class SqliteRepository:
             rationale=r["rationale"], confidence=r["confidence"],
         ) for r in rows]
 
+    def delete_mappings_for_candidate(self, candidate_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM scale_mapping WHERE candidate_id = ?",
+                (candidate_id,),
+            )
+
     # ------------------------------------------------------------------
     # ChildMatch
     # ------------------------------------------------------------------

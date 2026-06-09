@@ -92,6 +92,10 @@ class Repository(Protocol):
         """candidate_id 에 속한 매핑 후보를 반환한다."""
         ...
 
+    def delete_mappings_for_candidate(self, candidate_id: str) -> None:
+        """candidate_id 에 속한 매핑 후보를 모두 삭제한다(매핑 재실행 시 중복 방지)."""
+        ...
+
     # ------------------------------------------------------------------
     # ChildMatch
     # ------------------------------------------------------------------

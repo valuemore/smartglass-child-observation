@@ -4,6 +4,7 @@ import streamlit as st
 
 from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR
 from services.observation_service import generate_mock_observation_candidates
+from services.mapping.mapping_service import map_candidates_for_video
 from services.video_service import save_uploaded_video
 from services.video_preprocess_service import preprocess_video
 from storage.sqlite_repository import SqliteRepository
@@ -96,6 +97,33 @@ def _show_candidate_card(cand) -> None:
         st.metric("신뢰도", f"{cand.confidence:.2f}")
         if cand.needs_teacher_review:
             st.warning("교사 확인 필요")
+
+
+def _show_candidate_with_mappings(cand, mappings: list) -> None:
+    """관찰 후보 + 누리/KICCE 매핑 후보를 함께 표시한다(모두 교사 검토 전 후보)."""
+    st.markdown(f"**관찰 행동 (후보)**: {cand.observed_behavior}")
+    st.markdown(f"**시각적 근거**: {cand.visual_evidence}")
+    if cand.activity_context:
+        st.caption(f"활동 맥락: {cand.activity_context}")
+
+    nuri = [m for m in mappings if m.scale == "nuri"]
+    kicce = [m for m in mappings if m.scale == "kicce"]
+
+    if nuri:
+        chips = "  ".join(f"`{m.area} ({m.confidence:.2f})`" for m in nuri)
+        st.markdown(f"**누리 영역 후보**: {chips}")
+    else:
+        st.caption("누리 영역 후보: 없음")
+
+    if kicce:
+        st.markdown("**KICCE 문항 후보 (교사 검토 전)**")
+        for m in kicce:
+            st.markdown(
+                f"- [문항 {m.item_id}] {m.item_text}  \n"
+                f"  근거: {m.rationale} · 신뢰도 {m.confidence:.2f}"
+            )
+    else:
+        st.caption("KICCE 문항 후보: 없음")
 
 
 # ===========================================================================
@@ -341,6 +369,86 @@ else:
                         f"kept 프레임이 {len(diag_kept)}개 있는데 후보가 생성되지 않았습니다. "
                         "후보 생성 로직을 점검해주세요."
                     )
+
+st.divider()
+
+
+# ===========================================================================
+# 섹션 4: 누리·KICCE 후보 매핑
+# ===========================================================================
+st.subheader("4단계: 누리과정·KICCE 문항 후보 매핑")
+st.info(
+    "관찰 후보를 누리과정 5개 영역과 KICCE 유아관찰척도 문항 후보에 매핑합니다. "
+    "모든 결과는 **교사 검토 전 후보**이며, 확정·점수화하지 않습니다."
+)
+
+videos_with_candidates = [v for v in repo.list_videos() if repo.list_candidates(v.id)]
+
+if not videos_with_candidates:
+    st.warning(
+        "관찰 후보가 있는 영상이 없습니다. "
+        "먼저 3단계에서 Mock 비전 관찰 후보를 생성해주세요."
+    )
+else:
+    map_options = {f"{v.filename}  [{v.id}]": v.id for v in videos_with_candidates}
+    map_label = st.selectbox(
+        "매핑할 영상을 선택하세요",
+        options=list(map_options.keys()),
+        key="mapping_select",
+    )
+    map_video_id = map_options[map_label]
+
+    map_candidates = repo.list_candidates(map_video_id)
+
+    # ── 기존 매핑 표시 ─────────────────────────────────────────────────
+    existing_total = 0
+    for c in map_candidates:
+        existing_total += len(repo.list_mappings(c.id))
+    if existing_total:
+        st.success(
+            f"AI 후보 매핑 (교사 검토 전): 이미 {existing_total}개 매핑 후보가 저장됨"
+        )
+
+    map_btn = st.button(
+        "🗂️ 누리·KICCE 후보 매핑 실행",
+        key="run_mapping",
+        help="키워드/규칙 기반 1차 매핑입니다. 외부 API를 호출하지 않습니다.",
+    )
+
+    if map_btn:
+        mappings = None
+        with st.spinner("누리·KICCE 후보 매핑 중..."):
+            try:
+                mappings = map_candidates_for_video(
+                    video_id=map_video_id,
+                    repo=repo,
+                    actor=DEFAULT_ACTOR,
+                )
+            except Exception as e:
+                st.error(f"매핑 실패: {e}")
+
+        if mappings is not None:
+            mapped_cands = [c for c in map_candidates if repo.list_mappings(c.id)]
+            nuri_n = sum(1 for m in mappings if m.scale == "nuri")
+            kicce_n = sum(1 for m in mappings if m.scale == "kicce")
+
+            with st.container(border=True):
+                col1, col2, col3 = st.columns(3)
+                col1.metric("전체 관찰 후보", len(map_candidates))
+                col2.metric("매핑된 후보", len(mapped_cands))
+                col3.metric("누리/KICCE 후보 수", f"{nuri_n} / {kicce_n}")
+            st.markdown(
+                "**감사 로그**: 누리·KICCE 매핑(analyze) 기록이 저장되었습니다. ✅"
+            )
+
+            for cand in map_candidates:
+                cand_maps = repo.list_mappings(cand.id)
+                with st.expander(
+                    f"[{cand.temp_child_id}]  {cand.time_start:.1f}s – {cand.time_end:.1f}s"
+                    f"  | 매핑 후보 {len(cand_maps)}개",
+                    expanded=True,
+                ):
+                    _show_candidate_with_mappings(cand, cand_maps)
 
 st.divider()
 st.caption(
