@@ -14,3 +14,10 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent  # app/ → 프로젝트 루트
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
+
+# 프로젝트 루트의 .env 파일을 환경변수로 로드한다 (없으면 무시)
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(_root / ".env", override=False)
+except ImportError:
+    pass
