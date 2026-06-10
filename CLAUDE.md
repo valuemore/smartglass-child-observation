@@ -56,6 +56,24 @@ security/   접근 제어·감사 로그·삭제 정책
 - 원본 영상 전체를 외부 API로 전송하는 코드 작성 금지.
 - 비밀값(API 키)을 코드/저장소에 하드코딩 금지 (`.env` 사용, git 제외).
 
+## 서브에이전트 활용 원칙
+
+Claude Code는 작업 효율화를 위해 **서브에이전트를 적극 활용**한다.
+
+| 상황 | 사용할 에이전트 |
+|------|---------------|
+| 파일 위치·심볼·패턴 탐색 | `Explore` |
+| 구현 전 설계·아키텍처 검토 | `Plan` |
+| Streamlit UI 변경 | `streamlit-ui-developer` |
+| 영상·파이프라인 서비스 변경 | `pipeline-developer` |
+| 누리/KICCE 매핑 변경 | `mapping-specialist` |
+| 보안·개인정보 검토 | `security-privacy-reviewer` |
+| pytest 실패·회귀 수정 | `test-debugger` |
+
+- **탐색이 3회 이상 필요하면** Explore 에이전트에 위임한다.
+- **독립 작업 여러 개는 병렬 실행**한다 (단일 메시지에 여러 Agent 호출).
+- 에이전트 결과는 직접 검증(파일 확인·테스트 실행) 후 사용자에게 보고한다.
+
 ## 참고
 
 자세한 내용은 `docs/` 디렉토리 문서를 따른다. 기준 충돌 시 이 파일과 `docs/00_DEVELOPMENT_PLAN.md`가 우선한다.
