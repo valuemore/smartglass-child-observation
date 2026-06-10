@@ -18,8 +18,10 @@ import pandas as pd
 from storage.sqlite_repository import SqliteRepository
 from services.report_service import (
     build_video_report,
+    build_class_report,
     export_report_json,
     export_report_csv,
+    export_class_report_json,
 )
 
 
@@ -36,7 +38,91 @@ render_user_sidebar()
 
 # ─── 페이지 제목 ─────────────────────────────────────────────────────────────
 st.title("📊 연구자 확인용 리포트")
-st.caption("교사 확정 기록 기반 연구 분석 지표입니다. 관찰수준 점수는 산출하지 않습니다.")
+st.caption("교사 확정 기록 기반 연구 분석 지표입니다. 점수·발달·평정은 산출하지 않습니다.")
+
+# ─── 리포트 모드 선택 ─────────────────────────────────────────────────────────
+_mode = st.radio(
+    "리포트 종류", ["클래스 지원도 (주차별 누적)", "영상별 상세"],
+    horizontal=True, key="report_mode",
+)
+
+# ===========================================================================
+# 모드 A: 클래스 지원도 리포트 (V2-8)
+# ===========================================================================
+if _mode.startswith("클래스"):
+    _classes = repo.list_classes()
+    if not _classes:
+        st.info("등록된 클래스가 없습니다. ‘우리반 설정’에서 클래스를 등록해주세요.")
+        st.stop()
+    _copts = {f"{c.name} [{c.id}]": c.id for c in _classes}
+    _clabel = st.selectbox("클래스 선택", list(_copts.keys()), key="report_class")
+    _cid = _copts[_clabel]
+    crep = build_class_report(_cid, repo)
+
+    st.divider()
+    st.subheader("🤝 AI 지원도 요약")
+    st.caption("AI 성능 평가가 아니라, AI 후보가 교사의 기록 작성을 얼마나 도왔는지 보는 워크플로우 지표입니다.")
+    sm = crep["support_metrics"]
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("집계 영상", crep["total_videos"])
+    s2.metric("교사 확정 기록", crep["total_finals"])
+    s3.metric("AI 후보 활용률", f"{sm['ai_support_ratio']*100:.1f}%",
+              help="검토된 후보 중 채택·수정으로 활용된 비율")
+    s4.metric("채택률", f"{crep['acceptance_rate']*100:.1f}%")
+
+    st.markdown("**신뢰도 구간별 활용률**")
+    band = sm["confidence_band_usage"]
+    _BAND_LABEL = {"high": "높음(≥0.7)", "mid": "중간(0.4~0.7)", "low": "낮음(<0.4)"}
+    st.dataframe([
+        {"신뢰도 구간": _BAND_LABEL[b], "검토": band[b]["reviewed"],
+         "활용": band[b]["used"], "활용률": f"{band[b]['usage_rate']*100:.1f}%"}
+        for b in ("high", "mid", "low")
+    ], use_container_width=True, hide_index=True)
+
+    st.markdown("**AI 후보 유지율** (교사 확정에 유지된 비율)")
+    ret = crep["candidate_retention"]
+    rr1, rr2 = st.columns(2)
+    rr1.metric("누리 영역 유지율", f"{ret.get('nuri_retention_rate', 0.0)*100:.1f}%",
+               help=f"유지 {ret.get('nuri_retained',0)} / 제시 {ret.get('nuri_suggested',0)}")
+    rr2.metric("KICCE 문항 유지율", f"{ret.get('kicce_retention_rate', 0.0)*100:.1f}%",
+               help=f"유지 {ret.get('kicce_retained',0)} / 제시 {ret.get('kicce_suggested',0)}")
+
+    st.divider()
+    st.subheader("🗓 주차별 확정 추이")
+    if crep["by_period"]:
+        df_p = pd.DataFrame([
+            {"기간": f"{p['period_start']}~{p['period_end']}" if p["period_start"] else "미지정",
+             "채택": p["accepted"], "수정": p["edited"], "기각": p["rejected"], "합계": p["total"]}
+            for p in crep["by_period"]
+        ])
+        st.dataframe(df_p, use_container_width=True, hide_index=True)
+    else:
+        st.info("아직 확정된 주간 기록이 없습니다. ‘주간 관찰초안’에서 초안을 확정해주세요.")
+
+    st.divider()
+    st.subheader("🌱 누리 영역 분포 (확정 기준)")
+    ad = crep["area_distribution"]
+    if ad:
+        st.bar_chart(ad)
+    else:
+        st.info("확정된 누리 영역이 없습니다.")
+
+    st.divider()
+    st.subheader("💾 클래스 리포트 내보내기")
+    st.caption("미디어 경로(영상·프레임·클립·얼굴 참조사진)는 포함되지 않습니다.")
+    if st.button("JSON 생성", key=f"btn_cjson_{_cid}"):
+        st.session_state[f"cjson_{_cid}"] = export_class_report_json(_cid, repo)
+    if f"cjson_{_cid}" in st.session_state:
+        st.download_button(
+            "📥 JSON 다운로드", data=st.session_state[f"cjson_{_cid}"].encode("utf-8"),
+            file_name=f"class_report_{_cid}.json", mime="application/json",
+            key=f"dl_cjson_{_cid}",
+        )
+    st.stop()
+
+# ===========================================================================
+# 모드 B: 영상별 상세 (기존 V1)
+# ===========================================================================
 
 # ─── 1. 안내 배너 ─────────────────────────────────────────────────────────────
 with st.expander("📌 리포트 원칙 안내", expanded=False):

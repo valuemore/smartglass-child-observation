@@ -230,7 +230,7 @@ else:
                         weekly_draft_id=d.id,
                         period_start=d.period_start, period_end=d.period_end,
                         final_behavior=(edited_text.strip() or d.draft_text),
-                        confirmed_areas=[d.area],
+                        confirmed_areas=([d.area] if decision != "rejected" else []),
                         confirmed_items=(kicce_items if decision != "rejected" else []),
                         decision=decision, edited=bool(edited),
                         confirmed_by=_actor, confirmed_at=datetime.now(),

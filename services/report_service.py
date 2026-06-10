@@ -252,6 +252,107 @@ def calculate_ai_teacher_comparison(
 
 
 # ---------------------------------------------------------------------------
+# 클래스 단위 지원도 리포트 (V2-8)
+# ---------------------------------------------------------------------------
+
+def build_class_report(class_id: str, repo) -> dict:
+    """클래스 단위 AI 지원도 리포트를 구성한다(주차별 누적 확정 기반).
+
+    '지원도'는 AI 성능 평가가 아니라, AI 후보가 교사의 기록 작성을 얼마나 도왔는지를
+    보는 워크플로우 지표다(채택·수정 활용률, 후보 유지율, 신뢰도 구간별 활용률).
+    """
+    group = repo.get_class(class_id)
+    videos = [v for v in repo.list_videos() if v.class_id == class_id]
+
+    all_candidates: list[ObservationCandidate] = []
+    all_finals: list[FinalRecord] = []
+    for v in videos:
+        all_candidates.extend(repo.list_candidates(v.id))
+        all_finals.extend(repo.list_final_records(v.id))
+    cand_map = {c.id: c for c in all_candidates}
+
+    total_cands = len(all_candidates)
+    total_finals = len(all_finals)
+    accepted = sum(1 for f in all_finals if f.decision == "accepted")
+    edited = sum(1 for f in all_finals if f.decision == "edited")
+    rejected = sum(1 for f in all_finals if f.decision == "rejected")
+    base = total_cands if total_cands > 0 else 1
+
+    return {
+        "class_id": class_id,
+        "class_name": group.name if group else "",
+        "total_videos": len(videos),
+        "total_candidates": total_cands,
+        "total_finals": total_finals,
+        "accepted": accepted,
+        "edited": edited,
+        "rejected": rejected,
+        "unreviewed": total_cands - total_finals,
+        "acceptance_rate": round(accepted / base, 4),
+        "edit_rate": round(edited / base, 4),
+        "rejection_rate": round(rejected / base, 4),
+        "support_metrics": calculate_support_metrics(all_candidates, all_finals),
+        "candidate_retention": calculate_candidate_retention(all_candidates, all_finals, repo),
+        "area_distribution": calculate_area_distribution(all_finals),
+        "kicce_coverage": calculate_kicce_coverage(all_finals),
+        "by_period": calculate_by_period(all_finals),
+        "by_pseudonym": _group_by_pseudonym(all_finals, cand_map),
+    }
+
+
+def calculate_support_metrics(
+    candidates: list[ObservationCandidate],
+    finals: list[FinalRecord],
+) -> dict:
+    """AI 지원도 지표. AI 성능 점수가 아닌 교사 기록작성 지원 워크플로우 지표.
+
+    - ai_support_ratio: 검토된 후보 중 AI 후보를 (그대로 채택 또는 수정해) 활용한 비율.
+    - confidence_band_usage: 신뢰도 구간(high/mid/low)별 활용률(기각 아닌 비율).
+    """
+    cand_map = {c.id: c for c in candidates}
+    reviewed = len(finals)
+    used = sum(1 for f in finals if f.decision in ("accepted", "edited"))
+
+    bands = {
+        "high": {"reviewed": 0, "used": 0},
+        "mid": {"reviewed": 0, "used": 0},
+        "low": {"reviewed": 0, "used": 0},
+    }
+    for f in finals:
+        c = cand_map.get(f.candidate_id)
+        if c is None:
+            continue
+        band = "high" if c.confidence >= 0.7 else "mid" if c.confidence >= 0.4 else "low"
+        bands[band]["reviewed"] += 1
+        if f.decision != "rejected":
+            bands[band]["used"] += 1
+    for b in bands.values():
+        b["usage_rate"] = round(b["used"] / b["reviewed"], 4) if b["reviewed"] else 0.0
+
+    return {
+        "reviewed": reviewed,
+        "used": used,
+        "ai_support_ratio": round(used / reviewed, 4) if reviewed else 0.0,
+        "confidence_band_usage": bands,
+    }
+
+
+def calculate_by_period(finals: list[FinalRecord]) -> list[dict]:
+    """주차(기간)별 확정 집계. period 정보가 없는 확정은 'unscheduled'로 묶는다."""
+    buckets: dict[tuple, dict] = {}
+    for f in finals:
+        key = (f.period_start or "", f.period_end or "")
+        b = buckets.setdefault(key, {
+            "period_start": f.period_start, "period_end": f.period_end,
+            "accepted": 0, "edited": 0, "rejected": 0, "total": 0,
+        })
+        b["total"] += 1
+        if f.decision in b:
+            b[f.decision] += 1
+    return sorted(buckets.values(), key=lambda x: (x["period_start"] or ""))
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
@@ -308,6 +409,49 @@ def export_report_json(video_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
         actor=actor,
         action="export",
         detail="research_report_export_json",
+        created_at=datetime.now(),
+    ))
+    return json.dumps(export_data, ensure_ascii=False, indent=2)
+
+
+def export_class_report_json(class_id: str, repo, actor: str = DEFAULT_ACTOR) -> str:
+    """클래스 지원도 리포트를 JSON 문자열로 직렬화한다.
+
+    - 미디어 경로(영상·프레임·클립·얼굴 참조사진)는 포함하지 않는다.
+    - 유아 실명 없음(pseudonym_id 기준). export 실행 시 audit_log 기록.
+    """
+    report = build_class_report(class_id, repo)
+    export_data = {
+        "export_at": datetime.now().isoformat(),
+        "class_id": report["class_id"],
+        "class_name": report["class_name"],
+        "summary": {
+            k: report[k] for k in (
+                "total_videos", "total_candidates", "total_finals",
+                "accepted", "edited", "rejected", "unreviewed",
+                "acceptance_rate", "edit_rate", "rejection_rate",
+            )
+        },
+        "support_metrics": report["support_metrics"],
+        "candidate_retention": report["candidate_retention"],
+        "area_distribution": report["area_distribution"],
+        "kicce_coverage": report["kicce_coverage"],
+        "by_period": report["by_period"],
+        "by_pseudonym": {
+            pid: [
+                {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in rec.items()}
+                for rec in recs
+            ]
+            for pid, recs in report["by_pseudonym"].items()
+        },
+    }
+    # defense-in-depth: 미디어 경로(영상·프레임·클립·얼굴)가 새면 즉시 중단
+    assert_no_sensitive_paths(export_data)
+
+    repo.write_audit(AuditLog(
+        id=f"audit_{class_id}_export_{uuid.uuid4().hex[:6]}",
+        video_id=class_id, actor=actor, action="export",
+        detail="research_class_report_export_json",
         created_at=datetime.now(),
     ))
     return json.dumps(export_data, ensure_ascii=False, indent=2)

@@ -17,8 +17,11 @@ from typing import Any
 from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR
 from core.schemas import AuditLog
 
-_SENSITIVE_KEYS = frozenset({"stored_path", "image_path"})
-_SENSITIVE_FRAGMENTS = ("data/videos", "data/frames")
+# 민감 미디어 경로 키·조각 (V2: 클립·얼굴 참조사진 추가)
+_SENSITIVE_KEYS = frozenset({
+    "stored_path", "image_path", "local_clip_path", "reference_photo_path",
+})
+_SENSITIVE_FRAGMENTS = ("data/videos", "data/frames", "data/clips", "data/faces")
 
 
 def delete_video_and_related_data(
