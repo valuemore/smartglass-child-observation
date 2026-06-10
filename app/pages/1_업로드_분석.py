@@ -43,14 +43,14 @@ st.divider()
 _provider_display = VISION_PROVIDER.lower()
 if _provider_display == "mock":
     st.info("🔧 **비전 어댑터**: Mock (외부 API 미사용) — 시연·테스트 모드", icon="ℹ️")
-elif _provider_display == "external" and VISION_DRY_RUN:
+elif _provider_display in ("claude", "external") and VISION_DRY_RUN:
     st.warning(
-        "🧪 **비전 어댑터**: External (dry_run=True) — payload 검증만 수행, 실제 API 호출 없음",
+        f"🧪 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} (dry_run=True) — payload 검증만 수행, 실제 API 호출 없음",
         icon="⚠️",
     )
-elif _provider_display == "external" and not VISION_DRY_RUN:
+elif _provider_display in ("claude", "external") and not VISION_DRY_RUN:
     st.error(
-        "🌐 **비전 어댑터**: External (dry_run=False) — **실제 외부 API 호출 활성화** · 비용 발생 주의",
+        f"🌐 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} (dry_run=False) — **실제 외부 API 호출 활성화** · 비용 발생 주의",
         icon="🚨",
     )
 
@@ -400,10 +400,10 @@ _prov = VISION_PROVIDER.lower()
 if _prov == "mock":
     st.info(
         "현재 VISION_PROVIDER=mock으로 설정되어 있습니다. "
-        "외부 API 연결 분석을 사용하려면 .env에서 VISION_PROVIDER=external과 "
-        "VISION_MODEL을 설정하세요. API 키 입력은 UI에서 지원하지 않습니다."
+        "Claude 연동: .env에서 VISION_PROVIDER=claude, ANTHROPIC_API_KEY를 설정하세요. "
+        "API 키 입력은 UI에서 지원하지 않습니다."
     )
-elif _prov == "external" and VISION_DRY_RUN:
+elif _prov in ("external", "claude") and VISION_DRY_RUN:
     st.warning(
         "VISION_DRY_RUN=true입니다. payload 빌드·guard 검증을 수행하되 실제 외부 API는 호출하지 않습니다. "
         "실호출을 원하면 .env에서 VISION_DRY_RUN=false로 설정하세요."
@@ -432,7 +432,7 @@ elif _prov == "external" and VISION_DRY_RUN:
                     st.markdown("**감사 로그**: analyze 기록이 저장되었습니다. ✅")
                 except Exception as _e:
                     st.error(f"dry_run 실패: {_e}")
-elif _prov == "external" and not VISION_DRY_RUN:
+elif _prov in ("external", "claude") and not VISION_DRY_RUN:
     st.error(
         "**VISION_DRY_RUN=false — 실제 외부 API가 호출됩니다. 선별 프레임만 전송되며 비용이 발생합니다.**",
         icon="🚨",
