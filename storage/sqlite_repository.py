@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Optional
 
 from core.schemas import (
+    AiAssistantLog,
     AuditLog,
+    Child,
     ChildMatch,
+    ClassGroup,
     Clip,
+    FaceMatchCandidate,
     FinalRecord,
     Frame,
     InteractionEvidence,
@@ -29,6 +33,7 @@ from core.schemas import (
     Scene,
     ScaleMappingCandidate,
     Video,
+    WeeklyDraft,
 )
 
 _DEFAULT_DB_PATH = "data/app.db"
@@ -62,6 +67,28 @@ class SqliteRepository:
     def init_schema(self) -> None:
         """테이블·인덱스를 생성한다. 이미 존재하면 무시(idempotent)."""
         ddl = """
+        CREATE TABLE IF NOT EXISTS class_group (
+            id                 TEXT PRIMARY KEY,
+            name               TEXT NOT NULL,
+            teacher_owner      TEXT NOT NULL DEFAULT '',
+            face_match_enabled INTEGER NOT NULL DEFAULT 0,
+            created_at         TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS child (
+            id                   TEXT PRIMARY KEY,
+            class_id             TEXT NOT NULL REFERENCES class_group(id),
+            pseudonym_id         TEXT NOT NULL,
+            display_label        TEXT NOT NULL DEFAULT '',
+            reference_photo_path TEXT,
+            face_embedding       BLOB,
+            face_match_consent   INTEGER NOT NULL DEFAULT 0,
+            consent_at           TEXT,
+            consent_by           TEXT,
+            created_at           TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_child_class ON child(class_id);
+
         CREATE TABLE IF NOT EXISTS video (
             id              TEXT PRIMARY KEY,
             filename        TEXT NOT NULL,
@@ -77,7 +104,14 @@ class SqliteRepository:
             institution     TEXT NOT NULL DEFAULT '',
             class_name      TEXT NOT NULL DEFAULT '',
             observation_context TEXT NOT NULL DEFAULT '',
-            notes           TEXT NOT NULL DEFAULT ''
+            notes           TEXT NOT NULL DEFAULT '',
+            class_id        TEXT,
+            captured_date   TEXT,
+            analysis_status TEXT NOT NULL DEFAULT 'queued',
+            progress        INTEGER NOT NULL DEFAULT 0,
+            retry_count     INTEGER NOT NULL DEFAULT 0,
+            last_error      TEXT,
+            auto_analyzed   INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS clip (
@@ -157,20 +191,55 @@ class SqliteRepository:
         );
         CREATE INDEX IF NOT EXISTS idx_mapping_candidate ON scale_mapping(candidate_id);
 
+        CREATE TABLE IF NOT EXISTS face_match_candidate (
+            id            TEXT PRIMARY KEY,
+            video_id      TEXT NOT NULL REFERENCES video(id),
+            scene_id      TEXT,
+            clip_id       TEXT,
+            temp_child_id TEXT NOT NULL,
+            child_id      TEXT NOT NULL REFERENCES child(id),
+            confidence    REAL NOT NULL DEFAULT 0,
+            status        TEXT NOT NULL DEFAULT 'proposed',
+            decided_by    TEXT,
+            decided_at    TEXT,
+            created_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_face_match_video ON face_match_candidate(video_id);
+
         CREATE TABLE IF NOT EXISTS child_match (
             id             TEXT PRIMARY KEY,
             video_id       TEXT NOT NULL REFERENCES video(id),
             temp_child_id  TEXT NOT NULL,
             pseudonym_id   TEXT NOT NULL,
+            source         TEXT NOT NULL DEFAULT 'teacher',
             matched_by     TEXT NOT NULL,
             matched_at     TEXT NOT NULL,
             UNIQUE(video_id, temp_child_id)
         );
 
+        CREATE TABLE IF NOT EXISTS weekly_draft (
+            id                          TEXT PRIMARY KEY,
+            class_id                    TEXT NOT NULL REFERENCES class_group(id),
+            pseudonym_id                TEXT NOT NULL,
+            period_start                TEXT NOT NULL,
+            period_end                  TEXT NOT NULL,
+            area                        TEXT NOT NULL,
+            draft_text                  TEXT NOT NULL DEFAULT '',
+            source_candidate_ids_json   TEXT NOT NULL DEFAULT '[]',
+            representative_clip_ids_json TEXT NOT NULL DEFAULT '[]',
+            status                      TEXT NOT NULL DEFAULT 'generated',
+            created_at                  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_weekly_draft_lookup
+            ON weekly_draft(class_id, pseudonym_id, period_start);
+
         CREATE TABLE IF NOT EXISTS final_record (
             id                   TEXT PRIMARY KEY,
             candidate_id         TEXT NOT NULL REFERENCES observation_candidate(id),
             pseudonym_id         TEXT NOT NULL,
+            weekly_draft_id      TEXT,
+            period_start         TEXT,
+            period_end           TEXT,
             final_behavior       TEXT NOT NULL,
             confirmed_areas_json TEXT NOT NULL DEFAULT '[]',
             confirmed_items_json TEXT NOT NULL DEFAULT '[]',
@@ -182,6 +251,15 @@ class SqliteRepository:
             evidence_adequacy    TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_final_candidate ON final_record(candidate_id);
+
+        CREATE TABLE IF NOT EXISTS ai_assistant_log (
+            id               TEXT PRIMARY KEY,
+            actor            TEXT NOT NULL,
+            query            TEXT NOT NULL,
+            intent           TEXT NOT NULL,
+            response_summary TEXT NOT NULL DEFAULT '',
+            created_at       TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS audit_log (
             id         TEXT PRIMARY KEY,
@@ -206,7 +284,28 @@ class SqliteRepository:
                 "class_name":          "TEXT NOT NULL DEFAULT ''",
                 "observation_context": "TEXT NOT NULL DEFAULT ''",
                 "notes":               "TEXT NOT NULL DEFAULT ''",
+                # V2 — 클래스 연결·매일 업로드·자동 분석 상태
+                "class_id":        "TEXT",
+                "captured_date":   "TEXT",
+                "analysis_status": "TEXT NOT NULL DEFAULT 'queued'",
+                "progress":        "INTEGER NOT NULL DEFAULT 0",
+                "retry_count":     "INTEGER NOT NULL DEFAULT 0",
+                "last_error":      "TEXT",
+                "auto_analyzed":   "INTEGER NOT NULL DEFAULT 0",
             })
+            # V2 — child_match 출처
+            self._ensure_columns(conn, "child_match", {
+                "source": "TEXT NOT NULL DEFAULT 'teacher'",
+            })
+            # V2 — final_record 주간 초안 귀속
+            self._ensure_columns(conn, "final_record", {
+                "weekly_draft_id": "TEXT",
+                "period_start":    "TEXT",
+                "period_end":      "TEXT",
+            })
+            # 신규 컬럼(class_id 등) 보강 후에 인덱스를 생성한다(구버전 video 호환).
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_class ON video(class_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_class_date ON video(class_id, captured_date)")
 
     @staticmethod
     def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
@@ -225,8 +324,10 @@ class SqliteRepository:
         INSERT OR REPLACE INTO video
             (id, filename, stored_path, duration_sec, fps, width, height,
              status, created_at, retention_until,
-             owner, institution, class_name, observation_context, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             owner, institution, class_name, observation_context, notes,
+             class_id, captured_date, analysis_status, progress,
+             retry_count, last_error, auto_analyzed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._connect() as conn:
             conn.execute(sql, (
@@ -236,7 +337,32 @@ class SqliteRepository:
                 _dt_to_str(video.retention_until),
                 video.owner, video.institution, video.class_name,
                 video.observation_context, video.notes,
+                video.class_id, video.captured_date, video.analysis_status,
+                video.progress, video.retry_count, video.last_error,
+                int(video.auto_analyzed),
             ))
+
+    def update_analysis_status(
+        self, video_id: str, status: str, progress: int,
+        last_error: Optional[str] = None,
+    ) -> None:
+        """업로드 즉시 자동 분석의 상태머신·진행률을 갱신한다.
+
+        status='failed' 일 때 retry_count 를 1 증가시킨다.
+        """
+        with self._connect() as conn:
+            if status == "failed":
+                conn.execute(
+                    "UPDATE video SET analysis_status = ?, progress = ?, "
+                    "last_error = ?, retry_count = retry_count + 1 WHERE id = ?",
+                    (status, progress, last_error, video_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE video SET analysis_status = ?, progress = ?, "
+                    "last_error = ?, auto_analyzed = ? WHERE id = ?",
+                    (status, progress, last_error, int(status == "done"), video_id),
+                )
 
     def get_video(self, video_id: str) -> Optional[Video]:
         with self._connect() as conn:
@@ -286,6 +412,8 @@ class SqliteRepository:
             c = conn.execute("DELETE FROM scene WHERE video_id = ?", (video_id,))
             total += c.rowcount
             c = conn.execute("DELETE FROM child_match WHERE video_id = ?", (video_id,))
+            total += c.rowcount
+            c = conn.execute("DELETE FROM face_match_candidate WHERE video_id = ?", (video_id,))
             total += c.rowcount
             c = conn.execute("DELETE FROM audio_segment WHERE video_id = ?", (video_id,))
             total += c.rowcount
@@ -497,15 +625,22 @@ class SqliteRepository:
     # ------------------------------------------------------------------
 
     def set_child_match(self, match: ChildMatch) -> None:
+        # UNIQUE(video_id, temp_child_id) 충돌 시 갱신. id 가 달라도 동일 매칭으로 본다.
         sql = """
-        INSERT OR REPLACE INTO child_match
-            (id, video_id, temp_child_id, pseudonym_id, matched_by, matched_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO child_match
+            (id, video_id, temp_child_id, pseudonym_id, source, matched_by, matched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(video_id, temp_child_id) DO UPDATE SET
+            id = excluded.id,
+            pseudonym_id = excluded.pseudonym_id,
+            source = excluded.source,
+            matched_by = excluded.matched_by,
+            matched_at = excluded.matched_at
         """
         with self._connect() as conn:
             conn.execute(sql, (
                 match.id, match.video_id, match.temp_child_id,
-                match.pseudonym_id, match.matched_by,
+                match.pseudonym_id, match.source, match.matched_by,
                 _dt_to_str(match.matched_at),
             ))
 
@@ -515,11 +650,13 @@ class SqliteRepository:
                 "SELECT * FROM child_match WHERE video_id = ? ORDER BY temp_child_id",
                 (video_id,),
             ).fetchall()
+        keys_present = [set(r.keys()) for r in rows]
         return [ChildMatch(
             id=r["id"], video_id=r["video_id"],
             temp_child_id=r["temp_child_id"], pseudonym_id=r["pseudonym_id"],
+            source=(r["source"] if "source" in k else "teacher"),
             matched_by=r["matched_by"], matched_at=_str_to_dt(r["matched_at"]),
-        ) for r in rows]
+        ) for r, k in zip(rows, keys_present)]
 
     # ------------------------------------------------------------------
     # FinalRecord
@@ -531,8 +668,9 @@ class SqliteRepository:
             id, candidate_id, pseudonym_id, final_behavior,
             confirmed_areas_json, confirmed_items_json,
             decision, edited, confirmed_by, confirmed_at,
-            review_seconds, evidence_adequacy
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            review_seconds, evidence_adequacy,
+            weekly_draft_id, period_start, period_end
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         areas_json = json.dumps(record.confirmed_areas)
         items_json = json.dumps([i.model_dump(mode="json") for i in record.confirmed_items])
@@ -543,6 +681,7 @@ class SqliteRepository:
                 record.decision, int(record.edited),
                 record.confirmed_by, _dt_to_str(record.confirmed_at),
                 record.review_seconds, record.evidence_adequacy,
+                record.weekly_draft_id, record.period_start, record.period_end,
             ))
 
     def list_final_records(self, video_id: Optional[str] = None) -> list[FinalRecord]:
@@ -560,6 +699,225 @@ class SqliteRepository:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_final_record(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # ClassGroup — 학급
+    # ------------------------------------------------------------------
+
+    def save_class(self, group: ClassGroup) -> None:
+        sql = """
+        INSERT OR REPLACE INTO class_group
+            (id, name, teacher_owner, face_match_enabled, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.execute(sql, (
+                group.id, group.name, group.teacher_owner,
+                int(group.face_match_enabled), _dt_to_str(group.created_at),
+            ))
+
+    def get_class(self, class_id: str) -> Optional[ClassGroup]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM class_group WHERE id = ?", (class_id,)
+            ).fetchone()
+        return _row_to_class(row) if row else None
+
+    def list_classes(self, teacher_owner: Optional[str] = None) -> list[ClassGroup]:
+        if teacher_owner is not None:
+            sql = "SELECT * FROM class_group WHERE teacher_owner = ? ORDER BY created_at"
+            params: tuple = (teacher_owner,)
+        else:
+            sql = "SELECT * FROM class_group ORDER BY created_at"
+            params = ()
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_class(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Child — 등록 유아 (실명 미저장, 얼굴 데이터는 동의 시에만)
+    # ------------------------------------------------------------------
+
+    def add_child(self, child: Child) -> None:
+        sql = """
+        INSERT OR REPLACE INTO child
+            (id, class_id, pseudonym_id, display_label, reference_photo_path,
+             face_embedding, face_match_consent, consent_at, consent_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.execute(sql, (
+                child.id, child.class_id, child.pseudonym_id, child.display_label,
+                child.reference_photo_path, child.face_embedding,
+                int(child.face_match_consent),
+                _dt_to_str(child.consent_at), child.consent_by,
+                _dt_to_str(child.created_at),
+            ))
+
+    def get_child(self, child_id: str) -> Optional[Child]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM child WHERE id = ?", (child_id,)
+            ).fetchone()
+        return _row_to_child(row) if row else None
+
+    def list_children(self, class_id: str) -> list[Child]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM child WHERE class_id = ? ORDER BY pseudonym_id",
+                (class_id,),
+            ).fetchall()
+        return [_row_to_child(r) for r in rows]
+
+    def set_face_consent(
+        self, child_id: str, consent: bool, by: Optional[str] = None,
+        consent_at: Optional[datetime] = None,
+    ) -> None:
+        """얼굴매칭 동의 상태를 변경한다. 철회(consent=False) 시 참조사진·임베딩을 즉시 삭제한다.
+
+        반환: 없음. 참조사진 파일 삭제는 호출측(security 서비스)이 수행하고 감사 로그를 남긴다.
+        """
+        with self._connect() as conn:
+            if consent:
+                conn.execute(
+                    "UPDATE child SET face_match_consent = 1, consent_at = ?, consent_by = ? WHERE id = ?",
+                    (_dt_to_str(consent_at or datetime.now()), by, child_id),
+                )
+            else:
+                # 동의 철회: 임베딩·참조사진 경로를 즉시 비운다(보안 불변식).
+                conn.execute(
+                    "UPDATE child SET face_match_consent = 0, reference_photo_path = NULL, "
+                    "face_embedding = NULL, consent_at = ?, consent_by = ? WHERE id = ?",
+                    (_dt_to_str(consent_at or datetime.now()), by, child_id),
+                )
+
+    def delete_child_cascade(self, child_id: str) -> int:
+        """유아와 연관 얼굴 매칭 후보를 삭제한다(참조사진·임베딩 포함). audit_log는 보존."""
+        total = 0
+        with self._connect() as conn:
+            c = conn.execute(
+                "DELETE FROM face_match_candidate WHERE child_id = ?", (child_id,)
+            )
+            total += c.rowcount
+            c = conn.execute("DELETE FROM child WHERE id = ?", (child_id,))
+            total += c.rowcount
+        return total
+
+    # ------------------------------------------------------------------
+    # FaceMatchCandidate — 얼굴 참조 매칭 후보 (AI 제시, 교사 확정)
+    # ------------------------------------------------------------------
+
+    def add_face_match_candidates(self, items: list[FaceMatchCandidate]) -> None:
+        sql = """
+        INSERT OR IGNORE INTO face_match_candidate
+            (id, video_id, scene_id, clip_id, temp_child_id, child_id,
+             confidence, status, decided_by, decided_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.executemany(sql, [
+                (f.id, f.video_id, f.scene_id, f.clip_id, f.temp_child_id,
+                 f.child_id, f.confidence, f.status, f.decided_by,
+                 _dt_to_str(f.decided_at), _dt_to_str(f.created_at))
+                for f in items
+            ])
+
+    def list_face_match_candidates(self, video_id: str) -> list[FaceMatchCandidate]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM face_match_candidate WHERE video_id = ? "
+                "ORDER BY temp_child_id, confidence DESC",
+                (video_id,),
+            ).fetchall()
+        return [_row_to_face_match(r) for r in rows]
+
+    def decide_face_match(
+        self, candidate_id: str, status: str, decided_by: str,
+        decided_at: Optional[datetime] = None,
+    ) -> None:
+        """교사가 얼굴 매칭 후보를 확정/기각한다. AI는 이 메서드를 호출하지 않는다."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE face_match_candidate SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+                (status, decided_by, _dt_to_str(decided_at or datetime.now()), candidate_id),
+            )
+
+    # ------------------------------------------------------------------
+    # WeeklyDraft — 주간/격주 관찰기록 초안
+    # ------------------------------------------------------------------
+
+    def save_weekly_drafts(self, drafts: list[WeeklyDraft]) -> None:
+        sql = """
+        INSERT OR REPLACE INTO weekly_draft
+            (id, class_id, pseudonym_id, period_start, period_end, area,
+             draft_text, source_candidate_ids_json, representative_clip_ids_json,
+             status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.executemany(sql, [
+                (d.id, d.class_id, d.pseudonym_id, d.period_start, d.period_end,
+                 d.area, d.draft_text, json.dumps(d.source_candidate_ids),
+                 json.dumps(d.representative_clip_ids), d.status,
+                 _dt_to_str(d.created_at))
+                for d in drafts
+            ])
+
+    def get_weekly_draft(self, draft_id: str) -> Optional[WeeklyDraft]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM weekly_draft WHERE id = ?", (draft_id,)
+            ).fetchone()
+        return _row_to_weekly_draft(row) if row else None
+
+    def list_weekly_drafts(
+        self, class_id: str, pseudonym_id: Optional[str] = None,
+    ) -> list[WeeklyDraft]:
+        if pseudonym_id is not None:
+            sql = ("SELECT * FROM weekly_draft WHERE class_id = ? AND pseudonym_id = ? "
+                   "ORDER BY period_start, area")
+            params: tuple = (class_id, pseudonym_id)
+        else:
+            sql = "SELECT * FROM weekly_draft WHERE class_id = ? ORDER BY period_start, pseudonym_id, area"
+            params = (class_id,)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_row_to_weekly_draft(r) for r in rows]
+
+    def update_draft_status(self, draft_id: str, status: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE weekly_draft SET status = ? WHERE id = ?", (status, draft_id)
+            )
+
+    # ------------------------------------------------------------------
+    # AiAssistantLog — AI비서 감사
+    # ------------------------------------------------------------------
+
+    def write_assistant_log(self, entry: AiAssistantLog) -> None:
+        sql = """
+        INSERT INTO ai_assistant_log (id, actor, query, intent, response_summary, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.execute(sql, (
+                entry.id, entry.actor, entry.query, entry.intent,
+                entry.response_summary, _dt_to_str(entry.created_at),
+            ))
+
+    def list_assistant_logs(self, actor: Optional[str] = None) -> list[AiAssistantLog]:
+        if actor is not None:
+            sql = "SELECT * FROM ai_assistant_log WHERE actor = ? ORDER BY created_at"
+            params: tuple = (actor,)
+        else:
+            sql = "SELECT * FROM ai_assistant_log ORDER BY created_at"
+            params = ()
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [AiAssistantLog(
+            id=r["id"], actor=r["actor"], query=r["query"], intent=r["intent"],
+            response_summary=r["response_summary"], created_at=_str_to_dt(r["created_at"]),
+        ) for r in rows]
 
     # ------------------------------------------------------------------
     # AuditLog
@@ -609,6 +967,56 @@ def _row_to_video(r: sqlite3.Row) -> Video:
         class_name=r["class_name"] if "class_name" in keys else "",
         observation_context=r["observation_context"] if "observation_context" in keys else "",
         notes=r["notes"] if "notes" in keys else "",
+        class_id=r["class_id"] if "class_id" in keys else None,
+        captured_date=r["captured_date"] if "captured_date" in keys else None,
+        analysis_status=r["analysis_status"] if "analysis_status" in keys else "queued",
+        progress=r["progress"] if "progress" in keys else 0,
+        retry_count=r["retry_count"] if "retry_count" in keys else 0,
+        last_error=r["last_error"] if "last_error" in keys else None,
+        auto_analyzed=bool(r["auto_analyzed"]) if "auto_analyzed" in keys else False,
+    )
+
+
+def _row_to_class(r: sqlite3.Row) -> ClassGroup:
+    return ClassGroup(
+        id=r["id"], name=r["name"], teacher_owner=r["teacher_owner"],
+        face_match_enabled=bool(r["face_match_enabled"]),
+        created_at=_str_to_dt(r["created_at"]),
+    )
+
+
+def _row_to_child(r: sqlite3.Row) -> Child:
+    return Child(
+        id=r["id"], class_id=r["class_id"], pseudonym_id=r["pseudonym_id"],
+        display_label=r["display_label"] or "",
+        reference_photo_path=r["reference_photo_path"],
+        face_embedding=r["face_embedding"],
+        face_match_consent=bool(r["face_match_consent"]),
+        consent_at=_str_to_dt(r["consent_at"]),
+        consent_by=r["consent_by"],
+        created_at=_str_to_dt(r["created_at"]),
+    )
+
+
+def _row_to_face_match(r: sqlite3.Row) -> FaceMatchCandidate:
+    return FaceMatchCandidate(
+        id=r["id"], video_id=r["video_id"],
+        scene_id=r["scene_id"], clip_id=r["clip_id"],
+        temp_child_id=r["temp_child_id"], child_id=r["child_id"],
+        confidence=r["confidence"], status=r["status"],
+        decided_by=r["decided_by"], decided_at=_str_to_dt(r["decided_at"]),
+        created_at=_str_to_dt(r["created_at"]),
+    )
+
+
+def _row_to_weekly_draft(r: sqlite3.Row) -> WeeklyDraft:
+    return WeeklyDraft(
+        id=r["id"], class_id=r["class_id"], pseudonym_id=r["pseudonym_id"],
+        period_start=r["period_start"], period_end=r["period_end"],
+        area=r["area"], draft_text=r["draft_text"] or "",
+        source_candidate_ids=json.loads(r["source_candidate_ids_json"] or "[]"),
+        representative_clip_ids=json.loads(r["representative_clip_ids_json"] or "[]"),
+        status=r["status"], created_at=_str_to_dt(r["created_at"]),
     )
 
 
@@ -673,4 +1081,7 @@ def _row_to_final_record(r: sqlite3.Row) -> FinalRecord:
         confirmed_at=_str_to_dt(r["confirmed_at"]),
         review_seconds=review_seconds,
         evidence_adequacy=evidence_adequacy,
+        weekly_draft_id=r["weekly_draft_id"] if "weekly_draft_id" in keys else None,
+        period_start=r["period_start"] if "period_start" in keys else None,
+        period_end=r["period_end"] if "period_end" in keys else None,
     )

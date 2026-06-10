@@ -1,8 +1,9 @@
-# === 원본 영상·프레임·오디오·클립 (민감한 데이터) ===
+# === 원본 영상·프레임·오디오·클립·얼굴 참조사진 (민감한 데이터) ===
 data/videos/
 data/frames/
 data/audio/
 data/clips/
+data/faces/
 
 # === 로컬 DB ===
 data/app.db

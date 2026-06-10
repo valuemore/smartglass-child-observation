@@ -14,6 +14,7 @@ DB_PATH = "data/app.db"
 VIDEOS_DIR = "data/videos"                  # 원본 영상 저장 루트 (git 제외)
 FRAMES_DIR = "data/frames"                  # 추출 프레임 저장 루트 (git 제외)
 CLIPS_DIR  = os.getenv("CLIPS_DIR", "data/clips")  # 근거 클립 저장 루트 (git 제외)
+FACES_DIR  = os.getenv("FACES_DIR", "data/faces")  # 얼굴 참조사진 저장 루트 (동의 기반, git 제외, 제한 접근)
 RETENTION_DAYS = 180                        # 기본 영상 보관 기한(일)
 DEFAULT_ACTOR = os.getenv("DEFAULT_ACTOR", "teacher_demo")  # 감사 로그 행위자
 
