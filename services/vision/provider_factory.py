@@ -18,6 +18,7 @@ from core.config import (
     VISION_PROVIDER,
 )
 from services.vision.base import VisionAdapter
+from services.vision.claude_adapter import ClaudeVisionAdapter
 from services.vision.external_adapter import ExternalVisionAdapter
 from services.vision.mock_adapter import MockVisionAdapter
 
@@ -34,7 +35,17 @@ def get_vision_adapter() -> tuple[VisionAdapter, dict]:
     """
     provider = VISION_PROVIDER.lower().strip()
 
+    if provider == "claude":
+        return _try_build_claude()
+
     if provider == "external":
+        # 모델명이 claude- 로 시작하면 ClaudeVisionAdapter 자동 선택
+        if VISION_MODEL.lower().startswith("claude-"):
+            logger.info(
+                "VISION_PROVIDER=external이지만 model=%r이 Claude 모델 — ClaudeVisionAdapter 사용",
+                VISION_MODEL,
+            )
+            return _try_build_claude()
         return _try_build_external()
 
     # 기본: mock
@@ -47,6 +58,40 @@ def get_vision_adapter() -> tuple[VisionAdapter, dict]:
 # ---------------------------------------------------------------------------
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
+
+def _try_build_claude() -> tuple[VisionAdapter, dict]:
+    """VISION_PROVIDER=claude 시 ClaudeVisionAdapter 생성 시도.
+
+    model 미설정 시 claude-sonnet-4-6 기본값 사용.
+    api_key 없고 dry_run=False 이면 Mock 폴백.
+    """
+    model = VISION_MODEL or "claude-sonnet-4-6"
+
+    if not VISION_API_KEY and not VISION_DRY_RUN:
+        reason = "VISION_API_KEY / ANTHROPIC_API_KEY가 없고 dry_run=False이므로 mock으로 폴백합니다."
+        logger.warning(reason)
+        return _mock_adapter(fallback_reason=reason)
+
+    try:
+        adapter = ClaudeVisionAdapter(
+            model=model,
+            api_key=VISION_API_KEY,
+            dry_run=VISION_DRY_RUN,
+        )
+    except Exception as e:
+        reason = f"ClaudeVisionAdapter 생성 실패({e}), mock으로 폴백합니다."
+        logger.warning(reason)
+        return _mock_adapter(fallback_reason=reason)
+
+    info = {
+        "provider": "claude",
+        "model": model,
+        "dry_run": VISION_DRY_RUN,
+        "fallback_reason": None,
+    }
+    logger.info("ClaudeVisionAdapter 초기화: model=%s, dry_run=%s", model, VISION_DRY_RUN)
+    return adapter, info
+
 
 def _try_build_external() -> tuple[VisionAdapter, dict]:
     """VISION_PROVIDER=external 시 ExternalVisionAdapter 생성 시도.

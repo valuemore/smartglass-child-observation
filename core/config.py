@@ -17,10 +17,11 @@ APP_CAPTION = "교사 시점 영상 분석 기반 관찰기록 초안 생성 연
 # ---------------------------------------------------------------------------
 # 비전 API 설정 — API 키는 절대 여기에 하드코딩하지 않는다 (.env 사용)
 # ---------------------------------------------------------------------------
-VISION_PROVIDER = os.getenv("VISION_PROVIDER", "mock")   # "mock" | "external"
-VISION_MODEL    = os.getenv("VISION_MODEL", "")           # 예: "gpt-4o", "gemini-1.5-pro"
+VISION_PROVIDER = os.getenv("VISION_PROVIDER", "mock")   # "mock" | "claude" | "external"
+VISION_MODEL    = os.getenv("VISION_MODEL", "")           # 예: "claude-sonnet-4-6", "gpt-4o"
 VISION_DRY_RUN  = os.getenv("VISION_DRY_RUN", "true").lower() == "true"  # 기본 true (실호출 방지)
-VISION_API_KEY  = os.getenv("VISION_API_KEY", "")        # 절대 하드코딩 금지
+# VISION_API_KEY 없으면 ANTHROPIC_API_KEY(Claude 표준 환경변수)로 폴백
+VISION_API_KEY  = os.getenv("VISION_API_KEY") or os.getenv("ANTHROPIC_API_KEY", "")  # 절대 하드코딩 금지
 VISION_MAX_FRAMES_PER_SEGMENT = int(os.getenv("VISION_MAX_FRAMES_PER_SEGMENT", "4"))
 VISION_MAX_IMAGE_BYTES   = int(os.getenv("VISION_MAX_IMAGE_BYTES",  str(1 * 1024 * 1024)))   # 1 MB
 VISION_MAX_PAYLOAD_BYTES = int(os.getenv("VISION_MAX_PAYLOAD_BYTES", str(20 * 1024 * 1024))) # 20 MB

@@ -92,9 +92,12 @@ def parse_external_response(
         if not obs.get("id"):
             obs["id"] = f"cand_{uuid.uuid4().hex[:10]}"
 
-        # video_id / scene_id는 request에서 채운다 (외부 응답 신뢰 안 함)
+        # video_id / scene_id / 시간 구간은 request에서 채운다 (외부 응답 신뢰 안 함)
         obs["video_id"] = request.video_id
         obs["scene_id"] = request.segment_id
+        # time_start / time_end 가 없으면 segment 구간으로 채운다
+        obs.setdefault("time_start", request.time_start)
+        obs.setdefault("time_end", request.time_end)
 
         # needs_teacher_review 강제 (외부 응답값 무시) — 보정 전 개별 후보 값을 기준으로 경고
         if obs.get("needs_teacher_review") is False:
