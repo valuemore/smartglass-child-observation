@@ -28,11 +28,15 @@ def save_uploaded_video(
     class_name: str = "",
     observation_context: str = "",
     notes: str = "",
+    class_id: str | None = None,
+    captured_date: str | None = None,
 ) -> Video:
     """
     업로드된 영상 바이트를 저장하고 Video 메타데이터를 DB에 기록한다.
 
-    반환값: 저장된 Video 객체 (status="uploaded")
+    class_id: 소속 클래스(class_group.id, V2). captured_date: 촬영일(YYYY-MM-DD).
+    반환값: 저장된 Video 객체 (status="uploaded", analysis_status="queued")
+
     """
     now = datetime.now()
     video_id = f"vid_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
@@ -62,6 +66,8 @@ def save_uploaded_video(
         class_name=class_name,
         observation_context=observation_context,
         notes=notes,
+        class_id=class_id,
+        captured_date=captured_date or now.strftime("%Y-%m-%d"),
     )
     repo.save_video(video)
 

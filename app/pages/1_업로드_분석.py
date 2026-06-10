@@ -1,7 +1,7 @@
 import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import streamlit as st
 
@@ -11,6 +11,7 @@ from core.config import (
     VISION_PROVIDER, VISION_DEFAULT_MAX_SCENES_TEACHER,
 )
 from core.schemas import AuditLog
+from services.auto_analysis_service import run_auto_analysis
 from services.observation_service import (
     generate_mock_observation_candidates,
     generate_observation_candidates_with_provider,
@@ -22,7 +23,7 @@ from services.clip_service import select_evidence_clips, extract_clips
 from storage.sqlite_repository import SqliteRepository
 
 st.set_page_config(
-    page_title="영상 업로드 및 분석",
+    page_title="일일 영상 기록",
     page_icon="📹",
     layout="wide",
 )
@@ -33,16 +34,17 @@ from _responsive import inject_responsive_css
 require_login()
 inject_responsive_css()
 
-st.title("📹 영상 업로드 및 배치 분석")
-st.caption("교사 시점 스마트안경 영상을 업로드하고 AI 배치 분석을 실행합니다.")
+st.title("📹 일일 영상 기록")
+st.caption("교사 시점 스마트안경 영상을 업로드하면 **업로드 즉시 자동 분석**되어 관찰 후보가 누적됩니다.")
 
 with st.expander("📌 이 시스템의 원칙 (클릭하여 펼치기)", expanded=False):
     st.markdown(
-        "- **원본 영상은 로케에만 저장**됩니다. 외부 서버로 전송되지 않습니다.\n"
+        "- **원본 영상은 로컬에만 저장**됩니다. 외부 서버로 전송되지 않습니다.\n"
         "- 업로드 및 분석 시 **감사 로그(audit_log)** 가 기록됩니다.\n"
         "- AI는 관찰 후보를 *제안*할 뿐, 기록을 자동 확정하지 않습니다.\n"
+        "- 교사는 **매일 개별 후보를 검토하지 않습니다.** 수집 현황을 확인하고 1~2주 주기로 확정합니다.\n"
         "- 유아는 `child_A`, `child_B` 임시 ID로만 식별됩니다. 교사가 가명 ID와 매칭합니다.\n"
-        "- **관찰수준 점수는 산출하지 않습니다.**"
+        "- **관찰수준·발달·평정 점수는 산출하지 않습니다.**"
     )
 
 st.divider()
@@ -52,16 +54,17 @@ st.divider()
 # 비전 어댑터 현황 배지
 # ---------------------------------------------------------------------------
 _provider_display = VISION_PROVIDER.lower()
+_external_real = _provider_display in ("claude", "external", "gemini") and not VISION_DRY_RUN
 if _provider_display == "mock":
     st.info("🔧 **비전 어댑터**: Mock (외부 API 미사용) — 시연·테스트 모드", icon="ℹ️")
-elif _provider_display in ("claude", "external") and VISION_DRY_RUN:
+elif not _external_real:
     st.warning(
-        f"🧪 **비전 어댑터**: {'Claude (Anthropic)' if _provider_display == 'claude' else 'External'} — 테스트 모드 (실제 API 호출 없음)",
+        f"🧪 **비전 어댑터**: {_provider_display} — 테스트 모드 (실제 API 호출 없음)",
         icon="⚠️",
     )
-elif _provider_display in ("claude", "external") and not VISION_DRY_RUN:
+else:
     st.error(
-        f"🌐 **비전 어댑터**: {'Claude (Anthropic)' if _provider_display == 'claude' else 'External'} — **실제 외부 API 호출 활성화** · 비용 발생 주의",
+        f"🌐 **비전 어댑터**: {_provider_display} — **실제 외부 API 호출 활성화** · 비용 발생 주의",
         icon="🚨",
     )
 
@@ -182,17 +185,44 @@ def _show_candidate_with_mappings(cand, mappings: list) -> None:
         st.caption("KICCE 문항 후보: 없음")
 
 
+_STATUS_BADGE = {
+    "queued": "⏳ 대기",
+    "running": "🔄 분석 중",
+    "done": "✅ 완료",
+    "failed": "❌ 실패",
+}
+
+
+def _run_auto_analysis_with_progress(video_id: str, label: str) -> dict:
+    """진행률 바를 표시하며 자동 분석을 실행한다(교사 흐름)."""
+    bar = st.progress(0, text=f"{label}: 준비 중...")
+
+    def _cb(pct: int, text: str) -> None:
+        bar.progress(min(max(pct, 0), 100), text=f"{label}: {text}")
+
+    result = run_auto_analysis(
+        video_id, repo,
+        frames_dir=FRAMES_DIR, clips_dir=CLIPS_DIR,
+        actor=get_current_actor(), progress_cb=_cb,
+        allow_external_real=False,  # 자동 분석은 외부 실호출하지 않는다(안전장치)
+    )
+    if result["status"] == "done":
+        bar.progress(100, text=f"{label}: 완료")
+    return result
+
+
 # ===========================================================================
 # 섹션 0: 관찰 메타데이터 입력 (업로드 전 필수)
 # ===========================================================================
 OBSERVATION_CONTEXTS = ["자유놀이", "야외활동", "실내놀이", "급식", "이야기나누기", "기타"]
 
 st.subheader("관찰 메타데이터 입력")
-st.caption("영상 업로드 전에 기관 및 관찰 상황을 입력해주세요.")
+st.caption("영상 업로드 전에 기관·클래스·촬영일·관찰 상황을 입력해주세요.")
 
 with st.form("video_meta_form"):
     _meta_institution = st.text_input("기관명", placeholder="예: 행복유치원", help="필수 항목")
     _meta_class_name = st.text_input("클래스 이름", placeholder="예: 햇빛반", help="필수 항목")
+    _meta_captured = st.date_input("촬영일", value=date.today(), help="누적·주간 묶음 기준일")
     _meta_obs_context = st.selectbox("관찰 상황", OBSERVATION_CONTEXTS)
     _meta_notes = st.text_area(
         "메모 (선택)",
@@ -208,6 +238,7 @@ if _meta_submitted:
     st.session_state["video_meta_confirmed"] = {
         "institution": _meta_institution.strip(),
         "class_name": _meta_class_name.strip(),
+        "captured_date": _meta_captured.strftime("%Y-%m-%d"),
         "observation_context": _meta_obs_context,
         "notes": _meta_notes.strip(),
     }
@@ -220,6 +251,7 @@ _confirmed_meta = st.session_state["video_meta_confirmed"]
 st.success(
     f"메타데이터 확인됨 — 기관: {_confirmed_meta['institution']} / "
     f"클래스: {_confirmed_meta['class_name']} / "
+    f"촬영일: {_confirmed_meta.get('captured_date', '-')} / "
     f"관찰 상황: {_confirmed_meta['observation_context']}"
 )
 
@@ -227,136 +259,115 @@ st.divider()
 
 
 # ===========================================================================
-# 섹션 1: 영상 파일 업로드
+# 섹션 1: 영상 업로드 + 업로드 즉시 자동 분석
 # ===========================================================================
-st.subheader("1단계: 영상 파일 업로드")
-
+st.subheader("1단계: 영상 업로드 (업로드 즉시 자동 분석)")
 st.caption("여러 3분 클립을 한 번에 업로드할 수 있습니다(현장 검증 배치 업로드).")
 
 uploaded_files = st.file_uploader(
     "스마트안경 녹화 영상을 선택하세요 (여러 클립 선택 가능)",
     type=["mp4", "mov", "m4v", "avi"],
     accept_multiple_files=True,
-    help="지원 형식: mp4, mov, m4v, avi. 원본 영상은 로케 data/videos/ 에만 저장됩니다.",
+    help="지원 형식: mp4, mov, m4v, avi. 원본 영상은 로컬 data/videos/ 에만 저장됩니다.",
 )
 
 if uploaded_files:
     results: list[dict] = []
-    progress = st.progress(0.0, text="업로드 준비 중...")
-    for i, uf in enumerate(uploaded_files):
-        progress.progress(i / len(uploaded_files), text=f"업로드 중: {uf.name}")
+    for uf in uploaded_files:
         state_key = f"saved_video_{uf.name}_{uf.size}"
         if state_key in st.session_state:
             v = st.session_state[state_key]
-            results.append({"파일명": uf.name, "상태": "↺ 기존 저장됨",
-                            "영상 ID": v.id, "길이(초)": round(v.duration_sec, 1)})
+            results.append({"파일명": uf.name, "상태": "↺ 기존 저장됨", "영상 ID": v.id})
             continue
         try:
             meta = st.session_state.get("video_meta_confirmed", {})
-            video = save_uploaded_video(
-                file_bytes=uf.read(), filename=uf.name,
-                repo=repo, videos_dir=VIDEOS_DIR, actor=get_current_actor(),
-                institution=meta.get("institution", ""),
-                class_name=meta.get("class_name", ""),
-                observation_context=meta.get("observation_context", ""),
-                notes=meta.get("notes", ""),
-            )
+            with st.spinner(f"업로드 중: {uf.name}"):
+                video = save_uploaded_video(
+                    file_bytes=uf.read(), filename=uf.name,
+                    repo=repo, videos_dir=VIDEOS_DIR, actor=get_current_actor(),
+                    institution=meta.get("institution", ""),
+                    class_name=meta.get("class_name", ""),
+                    observation_context=meta.get("observation_context", ""),
+                    notes=meta.get("notes", ""),
+                    captured_date=meta.get("captured_date"),
+                )
             st.session_state[state_key] = video
-            results.append({"파일명": uf.name, "상태": "✅ 저장됨",
-                            "영상 ID": video.id, "길이(초)": round(video.duration_sec, 1)})
+
+            # 교사: 업로드 즉시 자동 분석. 연구자: 업로드만(수동 분석은 아래 섹션).
+            if _role == "teacher":
+                res = _run_auto_analysis_with_progress(video.id, uf.name)
+                if res["status"] == "done":
+                    note = (
+                        "외부 실호출 동의 필요(후보 보류)" if res["vision_skipped"]
+                        else f"관찰 후보 {res['candidates']}개"
+                    )
+                    results.append({"파일명": uf.name, "상태": f"✅ 자동 분석 완료 · {note}",
+                                    "영상 ID": video.id})
+                else:
+                    results.append({"파일명": uf.name, "상태": f"❌ 분석 실패: {res['error']}",
+                                    "영상 ID": video.id})
+            else:
+                results.append({"파일명": uf.name, "상태": "✅ 업로드됨(연구자: 수동 분석)",
+                                "영상 ID": video.id})
         except Exception as e:
-            results.append({"파일명": uf.name, "상태": "❌ 실패",
-                            "영상 ID": "-", "길이(초)": f"오류: {e}"})
-    progress.progress(1.0, text="업로드 완료")
+            results.append({"파일명": uf.name, "상태": f"❌ 업로드 실패: {e}", "영상 ID": "-"})
 
-    ok = sum(1 for r in results if "✅" in r["상태"])
-    skipped = sum(1 for r in results if "↺" in r["상태"])
-    failed = sum(1 for r in results if "❌" in r["상태"])
-    st.success(f"업로드 처리 완료 — 신규 {ok}건 · 기존 {skipped}건 · 실패 {failed}건")
     st.dataframe(results, use_container_width=True, hide_index=True)
-    st.caption("각 영상의 업로드 기록이 감사 로그(audit_log)에 저장되었습니다. ✅")
-
+    st.caption("업로드·분석 기록이 감사 로그(audit_log)에 저장되었습니다. ✅")
 else:
-    st.info("영상 파일을 선택하면 업로드와 메타데이터 추출이 자동으로 진행됩니다.")
+    st.info("영상 파일을 선택하면 업로드와 (교사 모드) 자동 분석이 진행됩니다.")
 
 st.divider()
 
 
 # ===========================================================================
-# 섹션 2: 장면 분할 및 프레임 추출
+# 교사 모드: 분석 상태 대시보드 + 재시도
 # ===========================================================================
-# 역할에 따라 영상 목록 필터 적용
-role = st.session_state.get("role", "teacher")
-owner_filter = get_current_actor() if role == "teacher" else None
-videos_all = repo.list_videos(owner=owner_filter)
-
 if _role == "teacher":
-    # 교사 모드: 섹션 전체 숨김, 영상 선택 시 자동 전처리 및 클립 추출
-    if videos_all:
-        _teacher_video_opts = {f"{v.filename}  [{v.id}]": v.id for v in videos_all}
-        _teacher_selected_label = st.selectbox(
-            "분석할 영상을 선택하세요",
-            options=list(_teacher_video_opts.keys()),
-            key="teacher_video_select",
+    st.subheader("오늘 업로드한 영상 — 분석 상태")
+    _my_videos = repo.list_videos(owner=get_current_actor())
+    if not _my_videos:
+        st.info("아직 업로드한 영상이 없습니다.")
+    else:
+        # 최근 업로드가 위로 오도록 역순
+        for v in reversed(_my_videos):
+            cand_n = len(repo.list_candidates(v.id))
+            badge = _STATUS_BADGE.get(v.analysis_status, v.analysis_status)
+            cols = st.columns([3, 2, 2, 2, 2])
+            cols[0].markdown(f"**{v.filename}**  \n`{v.id}`")
+            cols[1].markdown(f"촬영일\n\n{v.captured_date or '-'}")
+            cols[2].markdown(f"상태\n\n{badge}")
+            cols[3].markdown(f"진행률\n\n{v.progress}%")
+            cols[4].markdown(f"관찰 후보\n\n{cand_n}개")
+            if v.analysis_status == "failed":
+                st.caption(f"⚠️ 실패 사유: {v.last_error or '알 수 없음'} (재시도 {v.retry_count}회)")
+                if st.button("🔁 재시도", key=f"retry_{v.id}"):
+                    res = _run_auto_analysis_with_progress(v.id, v.filename)
+                    if res["status"] == "done":
+                        st.success(f"재시도 성공 — 관찰 후보 {res['candidates']}개")
+                    else:
+                        st.error(f"재시도 실패: {res['error']}")
+                    st.rerun()
+            st.divider()
+        st.caption(
+            "교사는 매일 개별 후보를 검토하지 않습니다. "
+            "‘수집 균형’에서 현황을 확인하고 1~2주 주기로 ‘주간 관찰초안’에서 확정하세요."
         )
-        _teacher_vid_id = _teacher_video_opts[_teacher_selected_label]
-        _teacher_video = repo.get_video(_teacher_vid_id)
-        _teacher_scenes = repo.list_scenes(_teacher_vid_id)
 
-        if not _teacher_scenes:
-            with st.spinner("영상 전처리 중... 잠시만 기다려주세요."):
-                try:
-                    _teacher_scenes, _teacher_frames = preprocess_video(
-                        video_id=_teacher_vid_id,
-                        repo=repo,
-                        frames_dir=FRAMES_DIR,
-                        actor=get_current_actor(),
-                    )
-                    st.success(
-                        f"자동 전처리 완료! 장면 {len(_teacher_scenes)}개 · 프레임 {len(_teacher_frames)}개"
-                    )
-                except Exception as _e:
-                    st.error(f"전처리 실패: {_e}")
-                    _teacher_frames = []
-
-            # 전처리 완료 후 클립 추출
-            if _teacher_scenes:
-                with st.spinner("근거 클립을 추출하고 있습니다..."):
-                    try:
-                        _teacher_clips_raw = select_evidence_clips(
-                            video=_teacher_video,
-                            scenes=_teacher_scenes,
-                            frames=_teacher_frames,
-                        )
-                        _teacher_clips = extract_clips(
-                            video=_teacher_video,
-                            clips=_teacher_clips_raw,
-                            clips_dir=CLIPS_DIR,
-                        )
-                        repo.add_clips(_teacher_clips)
-                        st.success(f"근거 클립 {len(_teacher_clips)}개 추출 완료")
-                    except Exception as _clip_e:
-                        st.warning("근거 클립 추출 중 오류가 발생했습니다. 프레임 이미지로 분석합니다.")
-        else:
-            _t_frames_all = []
-            for _sc in _teacher_scenes:
-                _t_frames_all.extend(repo.list_frames(_sc.id))
-            _t_kept = sum(1 for f in _t_frames_all if f.kept)
-            st.info(
-                f"전처리 완료: 장면 {len(_teacher_scenes)}개 · 프레임 {len(_t_frames_all)}개 (품질 통과: {_t_kept}개)"
-            )
+# ===========================================================================
+# 연구자 모드: 수동 전처리 + AI 분석 (실호출 동의 게이트 포함)
+# ===========================================================================
 else:
-    # 연구자 모드: 기존 UI 전체 유지
-    st.subheader("2단계: 장면 분할 및 프레임 추출")
-    st.info("이번 단계는 비전 모델 입력을 위한 영상 전처리 단계입니다.")
-
+    # ----- 섹션 2: 장면 분할 및 프레임 추출 -----
+    st.subheader("2단계: 장면 분할 및 프레임 추출 (연구자)")
+    st.info("비전 모델 입력을 위한 영상 전처리 단계입니다.")
+    videos_all = repo.list_videos(owner=None)
     if not videos_all:
         st.warning("업로드된 영상이 없습니다. 1단계에서 먼저 영상을 업로드해주세요.")
     else:
         video_options = {f"{v.filename}  [{v.id}]": v.id for v in videos_all}
         selected_label = st.selectbox(
-            "전처리할 영상을 선택하세요",
-            options=list(video_options.keys()),
+            "전처리할 영상을 선택하세요", options=list(video_options.keys()),
             key="preprocess_select",
         )
         selected_video_id_pre = video_options[selected_label]
@@ -379,177 +390,82 @@ else:
 
         run_btn = st.button(
             "🎬 장면 분할 및 프레임 추출 실행",
-            disabled=(selected_video_pre is None),
-            key="run_preprocess",
+            disabled=(selected_video_pre is None), key="run_preprocess",
         )
-
         if run_btn and selected_video_pre is not None:
-            scenes = None
-            frames = None
-            with st.spinner("장면 분할 및 프레임 추출 중... 영상 길이에 따라 수십 초 소요될 수 있습니다."):
+            scenes = frames = None
+            with st.spinner("장면 분할 및 프레임 추출 중..."):
                 try:
                     scenes, frames = preprocess_video(
-                        video_id=selected_video_id_pre,
-                        repo=repo,
-                        frames_dir=FRAMES_DIR,
-                        actor=get_current_actor(),
+                        video_id=selected_video_id_pre, repo=repo,
+                        frames_dir=FRAMES_DIR, actor=get_current_actor(),
                     )
                 except Exception as e:
                     st.error(f"전처리 실패: {e}")
-
             if scenes is not None and frames is not None:
                 kept = [f for f in frames if f.kept]
-                has_fallback = any(f.blur_score < 50.0 and f.kept for f in frames)
-                fallback_note = " (일부 fallback 선택 포함)" if has_fallback else ""
                 st.success(
-                    f"전처리 완료! 장면 {len(scenes)}개 · 프레임 {len(frames)}개 · "
-                    f"품질 통과 {len(kept)}개{fallback_note}"
+                    f"전처리 완료! 장면 {len(scenes)}개 · 프레임 {len(frames)}개 · 품질 통과 {len(kept)}개"
                 )
-                with st.container(border=True):
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("장면 수", len(scenes))
-                    col2.metric("추출 프레임", len(frames))
-                    col3.metric("품질 통과 (kept)", len(kept))
-                    if has_fallback:
-                        st.caption(
-                            "ℹ️ 일부 프레임은 blur 품질 기준 미달이나 "
-                            "scene별 최소 1장 보장을 위해 fallback으로 선택되었습니다."
-                        )
-                    st.markdown("**감사 로그**: 전처리(analyze) 기록이 저장되었습니다. ✅")
-
                 try:
                     _show_thumbnails(frames)
                 except Exception as thumb_err:
                     st.warning(f"프레임 미리보기 표시 중 오류: {thumb_err}")
 
-st.divider()
+    st.divider()
 
-
-# ===========================================================================
-# 섹션 3: AI 비전 관찰 후보 생성
-# ===========================================================================
-st.subheader("3단계: AI 비전 관찰 후보 생성")
-
-_ai_prov = VISION_PROVIDER.lower()
-_prov_label = (
-    "Claude (Anthropic)" if _ai_prov == "claude"
-    else ("External" if _ai_prov == "external" else "Mock")
-)
-
-if _ai_prov == "mock":
-    st.info(
-        "🔧 현재 Mock 어댑터로 동작합니다. 실제 API는 호출되지 않습니다.\n\n"
-        "Claude 연동: `.env`에서 `VISION_PROVIDER=claude`, `ANTHROPIC_API_KEY=sk-ant-...` 를 설정하세요.",
-        icon="ℹ️",
-    )
-elif VISION_DRY_RUN:
-    st.warning(
-        f"🧪 **{_prov_label}** — 테스트 모드 (실제 API 호출 없음, payload 안전성 검증만 수행)",
-        icon="⚠️",
-    )
-else:
-    st.error(
-        f"🌐 **{_prov_label}** — **실제 외부 API 호출, 비용 발생**. "
-        "선별 프레임만 전송됩니다.",
-        icon="🚨",
-    )
-
-# 분석 대상 영상 목록 (역할 기반 필터)
-if _role == "teacher":
-    _ai_videos = repo.list_videos(owner=get_current_actor())
-else:
+    # ----- 섹션 3: AI 비전 관찰 후보 생성 -----
+    st.subheader("3단계: AI 비전 관찰 후보 생성 (연구자)")
     _ai_videos = [v for v in repo.list_videos(owner=None) if repo.list_scenes(v.id)]
-
-if not _ai_videos:
-    if _role == "teacher":
-        st.warning("업로드된 영상이 없습니다. 위에서 영상을 업로드해주세요.")
+    if not _ai_videos:
+        st.warning("전처리 완료된 영상이 없습니다. 2단계를 먼저 실행해주세요.")
     else:
-        st.warning("전처리 완료된 영상이 없습니다. 2단계에서 장면 분할 및 프레임 추출을 먼저 실행해주세요.")
-else:
-    _ai_opts = {f"{v.filename}  [{v.id}]": v.id for v in _ai_videos}
-    _ai_label = st.selectbox("분석할 영상을 선택하세요", list(_ai_opts.keys()), key="ai_vision_select")
-    _ai_vid = _ai_opts[_ai_label]
+        _ai_opts = {f"{v.filename}  [{v.id}]": v.id for v in _ai_videos}
+        _ai_label = st.selectbox("분석할 영상을 선택하세요", list(_ai_opts.keys()), key="ai_vision_select")
+        _ai_vid = _ai_opts[_ai_label]
 
-    # 프레임 선별 미리보기
-    _all_scenes  = repo.list_scenes(_ai_vid)
-    _all_frames  = [f for s in _all_scenes for f in repo.list_frames(s.id)]
-    _kept_frames = [f for f in _all_frames if f.kept]
+        _all_scenes = repo.list_scenes(_ai_vid)
+        _all_frames = [f for s in _all_scenes for f in repo.list_frames(s.id)]
+        _kept_frames = [f for f in _all_frames if f.kept]
 
-    _default_max = VISION_DEFAULT_MAX_SCENES_TEACHER if _role == "teacher" else VISION_MAX_SCENES_PER_VIDEO
-    _max_scenes_ui = st.slider(
-        "분석할 최대 장면 수",
-        min_value=1,
-        max_value=max(len(_all_scenes), 1),
-        value=min(_default_max, max(len(_all_scenes), 1)),
-        step=1,
-        key="ai_max_scenes_slider",
-        help="장면 수가 많을수록 API 호출 횟수와 비용이 증가합니다.",
-    )
-    _preview_scenes = select_scenes_for_analysis(
-        _all_scenes, _all_frames,
-        max_scenes=_max_scenes_ui,
-        min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
-    )
-    _preview_kept = sum(
-        len([f for f in repo.list_frames(s.id) if f.kept])
-        for s in _preview_scenes
-    )
-    _pc1, _pc2, _pc3, _pc4 = st.columns(4)
-    _pc1.metric("전체 장면", len(_all_scenes))
-    _pc2.metric("전체 kept 프레임", len(_kept_frames))
-    _pc3.metric("선별 장면", len(_preview_scenes))
-    _pc4.metric("선별 프레임 (API 전송)", _preview_kept)
+        _max_scenes_ui = st.slider(
+            "분석할 최대 장면 수", min_value=1,
+            max_value=max(len(_all_scenes), 1),
+            value=min(VISION_MAX_SCENES_PER_VIDEO, max(len(_all_scenes), 1)),
+            step=1, key="ai_max_scenes_slider",
+            help="장면 수가 많을수록 API 호출 횟수와 비용이 증가합니다.",
+        )
+        _preview_scenes = select_scenes_for_analysis(
+            _all_scenes, _all_frames, max_scenes=_max_scenes_ui,
+            min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
+        )
+        _pc1, _pc2, _pc3 = st.columns(3)
+        _pc1.metric("전체 장면", len(_all_scenes))
+        _pc2.metric("전체 kept 프레임", len(_kept_frames))
+        _pc3.metric("선별 장면", len(_preview_scenes))
 
-    # 교사 모드: 선별 장면 썸네일 표시
-    if _role == "teacher":
-        _show_selected_scene_thumbnails(_preview_scenes, repo)
+        _existing_cands = repo.list_candidates(_ai_vid)
+        if _existing_cands:
+            st.success(f"AI 관찰 후보 (교사 검토 전): 이미 {len(_existing_cands)}개 생성됨")
 
-    # 기존 후보 표시
-    _existing_cands = repo.list_candidates(_ai_vid)
-    if _existing_cands:
-        st.success(f"AI 관찰 후보 (교사 검토 전): 이미 {len(_existing_cands)}개 생성됨")
-        for _c in _existing_cands:
-            with st.expander(
-                f"[{_c.temp_child_id}]  {_c.time_start:.1f}s – {_c.time_end:.1f}s"
-                f"  | 신뢰도 {_c.confidence:.2f}",
-                expanded=False,
-            ):
-                _show_candidate_card(_c)
-
-    # --- 실호출 게이트 (claude/external + dry_run=False) ---
-    if _ai_prov != "mock" and not VISION_DRY_RUN:
-        if _role == "teacher":
-            # 교사: 동의 폼 (이미 동의한 경우 자동 통과)
-            render_consent_form()
-        else:
-            # 연구자: 기존 사유 입력 + 체크박스 2개
+        if _external_real:
             _reason = st.text_input(
-                "실호출 사유 (필수, 감사 로그에 기록됨)",
-                key="ai_real_reason",
+                "실호출 사유 (필수, 감사 로그에 기록됨)", key="ai_real_reason",
                 placeholder="예: 현장 검증 1회차 - 클립 분석",
             )
-            _confirm_cost = st.checkbox(
-                "실제 외부 API 호출과 비용 발생에 동의합니다.", key="ai_confirm_cost",
-            )
-            _confirm_noret = st.checkbox(
-                "외부 제공자의 데이터 무보존·학습 미사용 조건을 확인했습니다.", key="ai_confirm_noret",
-            )
+            _confirm_cost = st.checkbox("실제 외부 API 호출과 비용 발생에 동의합니다.", key="ai_confirm_cost")
+            _confirm_noret = st.checkbox("외부 제공자의 데이터 무보존·학습 미사용 조건을 확인했습니다.", key="ai_confirm_noret")
             _ready = bool(_reason.strip()) and _confirm_cost and _confirm_noret
             if not _ready:
                 st.caption("사유 입력과 두 확인 항목을 모두 충족해야 실행할 수 있습니다.")
-
-            if st.button(
-                f"🌐 {_prov_label} 실호출 분석 실행",
-                key="run_ai_real",
-                disabled=not _ready,
-            ):
+            if st.button(f"🌐 {_provider_display} 실호출 분석 실행", key="run_ai_real", disabled=not _ready):
                 repo.write_audit(AuditLog(
                     id=f"audit_{_ai_vid}_approve_{uuid.uuid4().hex[:6]}",
                     video_id=_ai_vid, actor=get_current_actor(), action="analyze",
-                    detail=f"external_real_call_approved provider={_ai_prov} reason={_reason.strip()}",
+                    detail=f"external_real_call_approved provider={_provider_display} reason={_reason.strip()}",
                     created_at=datetime.now(),
                 ))
-                with st.spinner(f"{_prov_label} API 호출 중... 영상 길이에 따라 수십 초 소요됩니다."):
+                with st.spinner(f"{_provider_display} API 호출 중..."):
                     try:
                         _cands, _info = generate_observation_candidates_with_provider(
                             video_id=_ai_vid, repo=repo, actor=get_current_actor(),
@@ -557,92 +473,52 @@ else:
                         )
                         _mappings = map_candidates_for_video(_ai_vid, repo)
                         st.success(
-                            f"분석 완료 — provider={_info['provider']}, "
-                            f"model={_info['model']}, "
-                            f"장면 {_info.get('total_scenes','?')}개 중 {_info['segments']}개 선별, "
-                            f"관찰 후보 {_info['stored']}개 저장 (폐기 {_info['discarded']}개), "
-                            f"누리/KICCE 매핑 {len(_mappings)}건"
+                            f"분석 완료 — 관찰 후보 {_info['stored']}개 저장, 매핑 {len(_mappings)}건"
                         )
-                        if _info.get("fallback_reason"):
-                            st.caption(f"폴백 사유: {_info['fallback_reason']}")
-                        st.markdown("**감사 로그**: 승인 사유 및 analyze 기록이 저장되었습니다. ✅")
                         for _c2 in _cands:
                             with st.expander(
-                                f"[{_c2.temp_child_id}]  "
-                                f"{_c2.time_start:.1f}s – {_c2.time_end:.1f}s  "
-                                f"| 신뢰도 {_c2.confidence:.2f}",
-                                expanded=True,
+                                f"[{_c2.temp_child_id}] {_c2.time_start:.1f}s–{_c2.time_end:.1f}s "
+                                f"| 신뢰도 {_c2.confidence:.2f}", expanded=True,
                             ):
                                 _show_candidate_with_mappings(_c2, repo.list_mappings(_c2.id))
                     except Exception as _e:
                         st.error(f"API 분석 실패: {_e}")
-
-    # --- Mock 또는 dry_run 분석 버튼 ---
-    else:
-        _btn_label = (
-            "🔍 Mock 비전 관찰 후보 생성" if _ai_prov == "mock"
-            else f"🧪 {_prov_label} 테스트 분석 실행 (API 미호출)"
-        )
-        if st.button(_btn_label, key="run_ai_mock_or_dry"):
-            with st.spinner("분석 중..."):
-                try:
-                    if _ai_prov == "mock":
-                        _new_cands = generate_mock_observation_candidates(
-                            video_id=_ai_vid, repo=repo, actor=get_current_actor(),
-                            max_scenes=_max_scenes_ui,
-                        )
-                        _info_label = "Mock"
-                        _fallback = None
-                    else:
-                        _new_cands, _info = generate_observation_candidates_with_provider(
-                            video_id=_ai_vid, repo=repo, actor=get_current_actor(),
-                            max_scenes=_max_scenes_ui,
-                        )
-                        _info_label = (
-                            f"dry_run provider={_info['provider']} "
-                            f"model={_info['model'] or '(미설정)'}"
-                        )
-                        _fallback = _info.get("fallback_reason")
-
-                    if _new_cands:
-                        _mappings = map_candidates_for_video(_ai_vid, repo)
-                        st.success(
-                            f"관찰 후보 {len(_new_cands)}개 생성 ({_info_label}), "
-                            f"누리/KICCE 매핑 {len(_mappings)}건"
-                        )
-                        if _fallback:
-                            st.caption(f"폴백 사유: {_fallback}")
-                        for _c in _new_cands:
-                            with st.expander(
-                                f"[{_c.temp_child_id}]  {_c.time_start:.1f}s – {_c.time_end:.1f}s"
-                                f"  | 신뢰도 {_c.confidence:.2f}",
-                                expanded=True,
-                            ):
-                                _show_candidate_with_mappings(_c, repo.list_mappings(_c.id))
-                        st.markdown("**감사 로그**: 분석(analyze) 기록이 저장되었습니다. ✅")
-                    else:
-                        _diag_scenes = repo.list_scenes(_ai_vid)
-                        _diag_frames = []
-                        for _sc in _diag_scenes:
-                            _diag_frames.extend(repo.list_frames(_sc.id))
-                        _diag_kept = [_f for _f in _diag_frames if _f.kept]
-                        with st.container(border=True):
-                            st.markdown("**후보 생성 진단 정보**")
-                            _dc1, _dc2, _dc3 = st.columns(3)
-                            _dc1.metric("scene 수", len(_diag_scenes))
-                            _dc2.metric("frame 수", len(_diag_frames))
-                            _dc3.metric("kept frame 수", len(_diag_kept))
-                        if not _diag_scenes:
-                            st.warning("전처리된 장면이 없습니다. 2단계를 먼저 실행해주세요.")
-                        elif not _diag_kept:
-                            st.error("kept=True 프레임이 없습니다. 2단계에서 재전처리를 실행해주세요.")
+        else:
+            _btn_label = (
+                "🔍 Mock 비전 관찰 후보 생성" if _provider_display == "mock"
+                else f"🧪 {_provider_display} 테스트 분석 실행 (API 미호출)"
+            )
+            if st.button(_btn_label, key="run_ai_mock_or_dry"):
+                with st.spinner("분석 중..."):
+                    try:
+                        if _provider_display == "mock":
+                            _new_cands = generate_mock_observation_candidates(
+                                video_id=_ai_vid, repo=repo, actor=get_current_actor(),
+                                max_scenes=_max_scenes_ui,
+                            )
                         else:
-                            st.error("후보 생성 로직을 점검해주세요.")
-                except Exception as _e:
-                    st.error(f"분석 실패: {_e}")
+                            _new_cands, _info = generate_observation_candidates_with_provider(
+                                video_id=_ai_vid, repo=repo, actor=get_current_actor(),
+                                max_scenes=_max_scenes_ui,
+                            )
+                        if _new_cands:
+                            _mappings = map_candidates_for_video(_ai_vid, repo)
+                            st.success(
+                                f"관찰 후보 {len(_new_cands)}개 생성, 누리/KICCE 매핑 {len(_mappings)}건"
+                            )
+                            for _c in _new_cands:
+                                with st.expander(
+                                    f"[{_c.temp_child_id}] {_c.time_start:.1f}s–{_c.time_end:.1f}s "
+                                    f"| 신뢰도 {_c.confidence:.2f}", expanded=True,
+                                ):
+                                    _show_candidate_with_mappings(_c, repo.list_mappings(_c.id))
+                        else:
+                            st.warning("후보가 생성되지 않았습니다. 전처리 상태를 확인해주세요.")
+                    except Exception as _e:
+                        st.error(f"분석 실패: {_e}")
 
 st.divider()
 st.caption(
-    "📌 원칙: AI 후보는 교사가 검토·확정합니다. 관찰수준 점수는 산출하지 않습니다. "
+    "📌 원칙: AI 후보는 교사가 검토·확정합니다. 관찰수준·발달·평정 점수는 산출하지 않습니다. "
     "원본 영상은 외부로 전송되지 않습니다."
 )
