@@ -261,7 +261,7 @@ def _laplacian_blur_score(img) -> float:
 
 
 # ---------------------------------------------------------------------------
-# AI 분析 대상 장면 선별
+# AI 분석 대상 장면 선별
 # ---------------------------------------------------------------------------
 
 def select_scenes_for_analysis(
@@ -270,7 +270,7 @@ def select_scenes_for_analysis(
     max_scenes: int = VISION_MAX_SCENES_PER_VIDEO,
     min_scene_duration: float = VISION_MIN_SCENE_DURATION_SEC,
 ) -> list[Scene]:
-    """전처리된 장면 목록에서 AI 비전 분析에 보낼 대표 장면을 선별한다.
+    """전처리된 장면 목록에서 AI 비전 분석에 보낼 대표 장면을 선별한다.
 
     전략:
     1. min_scene_duration 미만 장면 제거 (너무 짧아 의미 있는 관찰 어려움)

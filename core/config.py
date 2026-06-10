@@ -36,7 +36,7 @@ VISION_MAX_PAYLOAD_BYTES = int(os.getenv("VISION_MAX_PAYLOAD_BYTES", str(20 * 10
 VISION_EXTERNAL_CONFIRM_REQUIRED = os.getenv("VISION_EXTERNAL_CONFIRM_REQUIRED", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
-# 장면 선별 설정 — AI 분析 대상 장면/프레임 수 상한 (비용·처리 시간 통제)
+# 장면 선별 설정 — AI 분석 대상 장면/프레임 수 상한 (비용·처리 시간 통제)
 # ---------------------------------------------------------------------------
 VISION_SCENE_SELECTION_ENABLED = os.getenv("VISION_SCENE_SELECTION_ENABLED", "true").lower() == "true"
 VISION_MAX_SCENES_PER_VIDEO    = int(os.getenv("VISION_MAX_SCENES_PER_VIDEO", "10"))

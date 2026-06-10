@@ -45,12 +45,12 @@ if _provider_display == "mock":
     st.info("🔧 **비전 어댑터**: Mock (외부 API 미사용) — 시연·테스트 모드", icon="ℹ️")
 elif _provider_display in ("claude", "external") and VISION_DRY_RUN:
     st.warning(
-        f"🧪 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} (dry_run=True) — payload 검증만 수행, 실제 API 호출 없음",
+        f"🧪 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} — 테스트 모드 (실제 API 호출 없음)",
         icon="⚠️",
     )
 elif _provider_display in ("claude", "external") and not VISION_DRY_RUN:
     st.error(
-        f"🌐 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} (dry_run=False) — **실제 외부 API 호출 활성화** · 비용 발생 주의",
+        f"🌐 **비전 어댑터**: {"Claude (Anthropic)" if _provider_display == "claude" else "External"} — **실제 외부 API 호출 활성화** · 비용 발생 주의",
         icon="🚨",
     )
 
@@ -307,12 +307,12 @@ if _ai_prov == "mock":
     )
 elif VISION_DRY_RUN:
     st.warning(
-        f"🧪 **{_prov_label}** (dry_run=True) — payload 빌드·guard 검증만 수행, 실제 API 미호출.",
+        f"🧪 **{_prov_label}** — 테스트 모드 (실제 API 호출 없음, payload 안전성 검증만 수행)",
         icon="⚠️",
     )
 else:
     st.error(
-        f"🌐 **{_prov_label}** (dry_run=False) — **실제 외부 API 호출, 비용 발생**. "
+        f"🌐 **{_prov_label}** — **실제 외부 API 호출, 비용 발생**. "
         "선별 프레임만 전송됩니다.",
         icon="🚨",
     )
@@ -356,7 +356,7 @@ else:
             st.caption("사유 입력과 두 확인 항목을 모두 충족해야 실행할 수 있습니다.")
 
         if st.button(
-            f"🌐 {_prov_label} 실호출 분析 실행",
+            f"🌐 {_prov_label} 실호출 분석 실행",
             key="run_ai_real",
             disabled=not _ready,
         ):
@@ -373,7 +373,7 @@ else:
                     )
                     _mappings = map_candidates_for_video(_ai_vid, repo)
                     st.success(
-                        f"분析 완료 — provider={_info['provider']}, "
+                        f"분석 완료 — provider={_info['provider']}, "
                         f"model={_info['model']}, "
                         f"장면 {_info.get('total_scenes','?')}개 중 {_info['segments']}개 선별, "
                         f"관찰 후보 {_info['stored']}개 저장 (폐기 {_info['discarded']}개), "
@@ -391,16 +391,16 @@ else:
                         ):
                             _show_candidate_with_mappings(_c2, repo.list_mappings(_c2.id))
                 except Exception as _e:
-                    st.error(f"API 분析 실패: {_e}")
+                    st.error(f"API 분석 실패: {_e}")
 
-    # --- Mock 또는 dry_run 분析 버튼 ---
+    # --- Mock 또는 dry_run 분석 버튼 ---
     else:
         _btn_label = (
             "🔍 Mock 비전 관찰 후보 생성" if _ai_prov == "mock"
-            else f"🧪 {_prov_label} dry_run 분析 실행 (API 미호출)"
+            else f"🧪 {_prov_label} 테스트 분석 실행 (API 미호출)"
         )
         if st.button(_btn_label, key="run_ai_mock_or_dry"):
-            with st.spinner("분析 중..."):
+            with st.spinner("분석 중..."):
                 try:
                     if _ai_prov == "mock":
                         _new_cands = generate_mock_observation_candidates(
@@ -433,7 +433,7 @@ else:
                                 expanded=True,
                             ):
                                 _show_candidate_with_mappings(_c, repo.list_mappings(_c.id))
-                        st.markdown("**감사 로그**: 분析(analyze) 기록이 저장되었습니다. ✅")
+                        st.markdown("**감사 로그**: 분석(analyze) 기록이 저장되었습니다. ✅")
                     else:
                         _diag_scenes = repo.list_scenes(_ai_vid)
                         _diag_frames = []
@@ -453,7 +453,7 @@ else:
                         else:
                             st.error("후보 생성 로직을 점검해주세요.")
                 except Exception as _e:
-                    st.error(f"분析 실패: {_e}")
+                    st.error(f"분석 실패: {_e}")
 
 st.divider()
 st.caption(
