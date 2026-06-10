@@ -22,6 +22,12 @@ st.set_page_config(
     layout="wide",
 )
 
+from _auth import require_login, render_user_sidebar, get_current_actor
+from _responsive import inject_responsive_css
+
+require_login()
+inject_responsive_css()
+
 st.title("✅ 교사 검토 및 확정")
 st.caption("AI가 생성한 관찰 후보를 검토하고 최종 관찰기록을 확정합니다.")
 
@@ -49,6 +55,7 @@ def get_repo() -> SqliteRepository:
 
 
 repo = get_repo()
+render_user_sidebar()
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +66,7 @@ videos_with_candidates = [v for v in repo.list_videos() if repo.list_candidates(
 if not videos_with_candidates:
     st.warning(
         "검토할 관찰 후보가 있는 영상이 없습니다. "
-        "먼저 '업로드 및 분석' 화면에서 관찰 후보를 생성해주세요."
+        "먼저 '업로드 및 분析' 화면에서 관찰 후보를 생성해주세요."
     )
     st.stop()
 
@@ -81,7 +88,7 @@ if selected_video and selected_video.stored_path and Path(selected_video.stored_
     st.video(selected_video.stored_path)
     access_key = f"video_access_logged_{selected_video_id}"
     if access_key not in st.session_state:
-        log_video_access(selected_video_id, repo, actor=DEFAULT_ACTOR)
+        log_video_access(selected_video_id, repo, actor=get_current_actor())
         st.session_state[access_key] = True
     st.caption("ℹ️ 원본 영상 접근이 감사 로그(access)에 기록되었습니다.")
 else:
@@ -117,7 +124,7 @@ with st.form("child_match_form"):
         for tid, pid in inputs.items():
             pid = pid.strip()
             if pid:
-                set_child_match(selected_video_id, tid, pid, repo, actor=DEFAULT_ACTOR)
+                set_child_match(selected_video_id, tid, pid, repo, actor=get_current_actor())
                 saved_n += 1
         if saved_n:
             st.success(f"{saved_n}건의 가명 ID 매칭을 저장했습니다.")
@@ -132,6 +139,8 @@ st.divider()
 # 관찰 후보 카드 목록
 # ---------------------------------------------------------------------------
 st.subheader("AI 관찰 후보 (교사 검토 전)")
+
+_NURI_ICONS = {"신체운동·건강": "🟢", "의사소통": "🔵", "사회관계": "🟡", "예술경험": "🟠", "자연탐구": "🟣"}
 
 # 최신 매칭/확정 상태 재조회
 review_items = list_review_candidates(selected_video_id, repo)
@@ -153,7 +162,7 @@ for item in review_items:
         f"{cand.time_start:.1f}s – {cand.time_end:.1f}s  | 신뢰도 {cand.confidence:.2f}{status_badge}",
         expanded=(final is None),
     ):
-        # 검토 소요 시간 타이머: 후보가 이 세션에서 처음 렌더된 시점 기록
+        # 검토 소요 시간 타이머
         open_key = f"review_open_{cand.id}"
         if open_key not in st.session_state:
             st.session_state[open_key] = time.time()
@@ -161,8 +170,19 @@ for item in review_items:
         def _elapsed_seconds() -> int:
             return max(0, int(time.time() - st.session_state.get(open_key, time.time())))
 
-        st.markdown(f"**관찰 행동 (후보)**: {cand.observed_behavior}")
-        st.markdown(f"**시각적 근거**: {cand.visual_evidence}")
+        # 썸네일 + 신뢰도
+        _col_thumb, _col_meta = st.columns([1, 3])
+        with _col_thumb:
+            _kept_frames = [f for f in repo.list_frames(cand.scene_id) if f.kept]
+            if _kept_frames and Path(_kept_frames[0].image_path).exists():
+                st.image(_kept_frames[0].image_path, caption=f"{cand.time_start:.1f}s", use_container_width=True)
+            else:
+                st.caption("썸네일 없음")
+        with _col_meta:
+            st.progress(float(cand.confidence), text=f"AI 신뢰도 {cand.confidence:.0%}")
+            st.markdown(f"**관찰 행동**: {cand.observed_behavior}")
+            st.caption(f"시각적 근거: {cand.visual_evidence}")
+
         if cand.activity_context:
             st.caption(f"활동 맥락: {cand.activity_context}")
         if cand.peer_relation:
@@ -180,53 +200,71 @@ for item in review_items:
         if cand.needs_teacher_review:
             st.warning("교사 확인 필요 (AI 후보)")
 
-        # ── 누리 영역 후보 선택 ─────────────────────────────────────
+        # 누리 영역 후보 선택 — 5컬럼 그리드
         st.markdown("**누리 영역 후보 (교사 검토 전)** — 확정할 항목을 선택하세요")
         selected_areas = []
         if nuri:
-            for m in nuri:
-                checked = st.checkbox(
-                    f"{m.area}  ·  근거: {m.rationale}  ·  신뢰도 {m.confidence:.2f}",
-                    key=f"nuri_{cand.id}_{m.id}",
+            st.markdown("**누리과정 영역 선택**")
+            _nuri_cols = st.columns(min(len(nuri), 5))
+            for _ni, _nm in enumerate(nuri):
+                _icon = _NURI_ICONS.get(_nm.area, "⬜")
+                _checked = _nuri_cols[_ni].checkbox(
+                    f"{_icon} {_nm.area}\n({_nm.confidence:.0%})",
+                    key=f"nuri_{cand.id}_{_nm.id}",
                 )
-                if checked:
-                    selected_areas.append(m.area)
+                if _checked:
+                    selected_areas.append(_nm.area)
         else:
             st.caption("누리 영역 후보 없음")
 
-        # ── KICCE 문항 후보 선택 ────────────────────────────────────
+        # KICCE 문항 후보 선택 — 영역 필터 + border 카드
         st.markdown("**KICCE 문항 후보 (교사 검토 전)** — 확정할 문항을 선택하세요")
         selected_items = []
         if kicce:
-            for m in kicce:
-                checked = st.checkbox(
-                    f"[문항 {m.item_id}] {m.item_text}  ·  신뢰도 {m.confidence:.2f}",
-                    key=f"kicce_{cand.id}_{m.id}",
-                )
-                if checked:
-                    selected_items.append(mapping_to_kicce_item(m))
+            st.markdown("**KICCE 문항 선택**")
+            _kicce_areas = sorted({_km.area for _km in kicce if _km.area})
+            _area_filter = st.selectbox(
+                "영역 필터", ["전체"] + _kicce_areas,
+                key=f"kicce_filter_{cand.id}",
+            )
+            _filtered_kicce = kicce if _area_filter == "전체" else [_km for _km in kicce if _km.area == _area_filter]
+            for _km in _filtered_kicce:
+                with st.container(border=True):
+                    _kicce_checked = st.checkbox(
+                        f"[{_km.item_id}] {_km.item_text[:40]}…  ({_km.confidence:.0%})",
+                        key=f"kicce_{cand.id}_{_km.id}",
+                    )
+                    st.caption(_km.rationale)
+                    if _kicce_checked:
+                        selected_items.append(mapping_to_kicce_item(_km))
         else:
             st.caption("KICCE 문항 후보 없음")
 
         if not selected_areas and not selected_items:
             st.caption("선택된 영역/문항 없음")
 
-        # ── 수정 textarea ───────────────────────────────────────────
-        edited_behavior = st.text_area(
-            "행동 서술 (수정 후 채택 시 사용)",
-            value=cand.observed_behavior,
-            key=f"edit_{cand.id}",
-        )
+        # 행동 서술 수정 — expander로 래핑
+        with st.expander("✏️ 행동 서술 수정 (수정 후 채택 시 펼치기)", expanded=False):
+            edited_behavior = st.text_area(
+                "수정 내용",
+                value=cand.observed_behavior,
+                key=f"edit_{cand.id}",
+            )
+        # expander 밖에서도 edited_behavior 참조 가능하도록 기본값 유지
+        if f"edit_{cand.id}" in st.session_state:
+            edited_behavior = st.session_state[f"edit_{cand.id}"]
+        else:
+            edited_behavior = cand.observed_behavior
 
-        # ── AI 후보 시각적 근거 적절성 (교사 판단, 유아 평가 아님) ──────
+        # AI 후보 시각적 근거 적절성 — 아이콘 추가
         adequacy_label = st.radio(
-            "AI 후보의 시각적 근거 적절성 (선택)",
-            options=["미평가", "적절", "부분", "부적절"],
+            "시각적 근거 적절성",
+            options=["미평가", "👍 적절", "🤔 부분", "👎 부적절"],
             horizontal=True,
             key=f"adeq_{cand.id}",
             help="AI 후보가 제시한 시각적 근거의 품질 평가입니다. 유아 발달·관찰수준 점수가 아닙니다.",
         )
-        _ADEQ_MAP = {"적절": "adequate", "부분": "partial", "부적절": "inadequate"}
+        _ADEQ_MAP = {"👍 적절": "adequate", "🤔 부분": "partial", "👎 부적절": "inadequate"}
         evidence_adequacy = _ADEQ_MAP.get(adequacy_label)
         st.caption("⏱ 검토 소요 시간은 후보 열람~확정 경과(유휴 포함) 근사값으로 기록됩니다.")
 
@@ -236,7 +274,7 @@ for item in review_items:
                 "아래 버튼으로 재저장하면 기존 확정 기록을 덮어씁니다."
             )
 
-        # ── 교사 액션 버튼 ──────────────────────────────────────────
+        # 교사 액션 버튼
         pid_for_save = pseudonym if pseudonym else cand.temp_child_id
         c1, c2, c3 = st.columns(3)
 
@@ -246,7 +284,7 @@ for item in review_items:
                     candidate_id=cand.id, pseudonym_id=pid_for_save,
                     final_behavior=cand.observed_behavior,
                     confirmed_areas=selected_areas, confirmed_items=selected_items,
-                    decision="accepted", repo=repo, actor=DEFAULT_ACTOR,
+                    decision="accepted", repo=repo, actor=get_current_actor(),
                     video_id=selected_video_id,
                     review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )
@@ -260,7 +298,7 @@ for item in review_items:
                     candidate_id=cand.id, pseudonym_id=pid_for_save,
                     final_behavior=edited_behavior,
                     confirmed_areas=selected_areas, confirmed_items=selected_items,
-                    decision="edited", repo=repo, actor=DEFAULT_ACTOR,
+                    decision="edited", repo=repo, actor=get_current_actor(),
                     video_id=selected_video_id,
                     review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )
@@ -274,7 +312,7 @@ for item in review_items:
                     candidate_id=cand.id, pseudonym_id=pid_for_save,
                     final_behavior=cand.observed_behavior,
                     confirmed_areas=[], confirmed_items=[],
-                    decision="rejected", repo=repo, actor=DEFAULT_ACTOR,
+                    decision="rejected", repo=repo, actor=get_current_actor(),
                     video_id=selected_video_id,
                     review_seconds=_elapsed_seconds(), evidence_adequacy=evidence_adequacy,
                 )

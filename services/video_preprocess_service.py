@@ -264,6 +264,12 @@ def _laplacian_blur_score(img) -> float:
 # AI 분석 대상 장면 선별
 # ---------------------------------------------------------------------------
 
+def _max_blur_for_scene(scene: Scene, frames: list[Frame]) -> float:
+    """장면 내 kept=True 프레임의 blur_score 최대값을 반환한다. 없으면 0.0."""
+    kept_scores = [f.blur_score for f in frames if f.scene_id == scene.id and f.kept]
+    return max(kept_scores) if kept_scores else 0.0
+
+
 def select_scenes_for_analysis(
     scenes: list[Scene],
     frames: list[Frame],
@@ -323,11 +329,11 @@ def select_scenes_for_analysis(
         if not in_bucket:
             continue
 
-        # kept 프레임 있는 장면 우선, 같으면 가장 긴 장면
+        # blur_score 최대값 높은 장면 우선(화질 기준), 같으면 가장 긴 장면
         best = max(
             in_bucket,
             key=lambda s: (
-                1 if s.id in kept_scene_ids else 0,
+                _max_blur_for_scene(s, frames),
                 s.time_end - s.time_start,
             ),
         )

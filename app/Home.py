@@ -11,6 +11,12 @@ st.set_page_config(
     layout="wide",
 )
 
+from _auth import require_login, render_user_sidebar
+from _responsive import inject_responsive_css
+
+require_login()
+inject_responsive_css()
+
 
 # ---------------------------------------------------------------------------
 # 저장소 초기화 (앱 생애주기 1회, 재실행 시 재사용)
@@ -24,6 +30,7 @@ def get_repo() -> SqliteRepository:
 
 
 repo = get_repo()
+render_user_sidebar()
 
 # ---------------------------------------------------------------------------
 # 헤더

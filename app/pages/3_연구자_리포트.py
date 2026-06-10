@@ -7,6 +7,12 @@ st.set_page_config(
     layout="wide",
 )
 
+from _auth import require_login, render_user_sidebar
+from _responsive import inject_responsive_css
+
+require_login(allowed_roles=["researcher"])
+inject_responsive_css()
+
 import pandas as pd
 
 from storage.sqlite_repository import SqliteRepository
@@ -26,10 +32,11 @@ def get_repo():
 
 
 repo = get_repo()
+render_user_sidebar()
 
 # ─── 페이지 제목 ─────────────────────────────────────────────────────────────
 st.title("📊 연구자 확인용 리포트")
-st.caption("교사 확정 기록 기반 연구 분석 지표입니다. 관찰수준 점수는 산출하지 않습니다.")
+st.caption("교사 확정 기록 기반 연구 분析 지표입니다. 관찰수준 점수는 산출하지 않습니다.")
 
 # ─── 1. 안내 배너 ─────────────────────────────────────────────────────────────
 with st.expander("📌 리포트 원칙 안내", expanded=False):
@@ -49,8 +56,8 @@ videos_with_cands = [v for v in all_videos if repo.list_candidates(v.id)]
 
 if not videos_with_cands:
     st.warning(
-        "분석된 영상이 없습니다. "
-        "'업로드 & 분석' 화면에서 영상을 업로드하고 분석한 뒤 다시 확인해주세요."
+        "分析된 영상이 없습니다. "
+        "'업로드 & 分析' 화면에서 영상을 업로드하고 分析한 뒤 다시 확인해주세요."
     )
     st.stop()
 
@@ -86,7 +93,7 @@ st.divider()
 
 # ─── 4. AI 후보 대비 교사 검토 결과 ───────────────────────────────────────────
 st.subheader("🔍 AI 후보 대비 교사 검토 결과")
-st.caption("AI 성능 평가가 아닌 교사 검토 워크플로우 분석 지표입니다.")
+st.caption("AI 성능 평가가 아닌 교사 검토 워크플로우 分析 지표입니다.")
 
 cols = st.columns(5)
 cols[0].metric("전체 후보", report["total_candidates"])
@@ -115,7 +122,15 @@ if area_dist:
         {"누리 영역": list(area_dist.keys()), "확정 건수": list(area_dist.values())}
     ).set_index("누리 영역").sort_values("확정 건수", ascending=False)
     st.dataframe(df_area, use_container_width=True)
-    st.bar_chart(df_area, height=250)
+
+    import altair as alt
+    _area_chart = alt.Chart(df_area.reset_index()).mark_bar().encode(
+        x=alt.X("확정 건수:Q"),
+        y=alt.Y("누리 영역:N", sort="-x"),
+        color=alt.Color("누리 영역:N", scale=alt.Scale(scheme="tableau10")),
+        tooltip=["누리 영역", "확정 건수"],
+    ).properties(height=200)
+    st.altair_chart(_area_chart, use_container_width=True)
 else:
     st.info("선택된 누리 영역 없음 — 교사 검토 화면에서 누리 영역 체크박스를 선택했는지 확인하세요.")
 
@@ -150,6 +165,44 @@ by_pseudo = report["by_pseudonym"]
 if not by_pseudo:
     st.info("확정 기록이 없습니다.")
 else:
+    import altair as alt
+
+    # 타임라인: FinalRecord와 ObservationCandidate 조인
+    _timeline_rows = []
+    try:
+        for _pid, _recs in by_pseudo.items():
+            for _rec in _recs:
+                _cand_id = _rec.get("candidate_id") if isinstance(_rec, dict) else getattr(_rec, "candidate_id", None)
+                _decision = _rec.get("decision") if isinstance(_rec, dict) else getattr(_rec, "decision", None)
+                if _cand_id and hasattr(repo, "get_candidate"):
+                    _cand = repo.get_candidate(_cand_id)
+                    if _cand:
+                        _timeline_rows.append({
+                            "유아": _pid,
+                            "시작(초)": _cand.time_start,
+                            "종료(초)": _cand.time_end,
+                            "결정": _decision,
+                        })
+    except Exception:
+        _timeline_rows = []
+
+    if _timeline_rows:
+        _df_timeline = pd.DataFrame(_timeline_rows)
+        _timeline_chart = alt.Chart(_df_timeline).mark_bar(size=20).encode(
+            x=alt.X("시작(초):Q"),
+            x2="종료(초):Q",
+            y=alt.Y("유아:N"),
+            color=alt.Color("결정:N", scale=alt.Scale(
+                domain=["accepted", "edited", "rejected"],
+                range=["#2ecc71", "#f39c12", "#e74c3c"],
+            )),
+            tooltip=["유아", "시작(초)", "종료(초)", "결정"],
+        ).properties(
+            height=max(100, len(by_pseudo) * 50),
+            title="유아별 확정 관찰기록 타임라인",
+        )
+        st.altair_chart(_timeline_chart, use_container_width=True)
+
     for pid, recs in sorted(by_pseudo.items()):
         with st.expander(f"👤 {pid}  —  {len(recs)}건", expanded=True):
             for rec in recs:
@@ -210,12 +263,12 @@ r2.metric(
 if ret.get("nuri_suggested", 0) == 0 and ret.get("kicce_suggested", 0) == 0:
     st.info(
         "AI 제시 후보(누리·KICCE 매핑)가 없어 유지율을 계산할 수 없습니다. "
-        "'업로드 & 분석' 화면에서 누리·KICCE 후보 매핑을 먼저 실행하세요."
+        "'업로드 & 分析' 화면에서 누리·KICCE 후보 매핑을 먼저 실행하세요."
     )
 
 st.divider()
 
-# ─── 7c-2. 교사 검토 노력 (소요 시간·근거 적절성) ────────────────────────────
+# ─── 7c-2. 교사 검토 노력 ────────────────────────────────────────────────────
 st.subheader("🧑‍🏫 교사 검토 노력")
 st.caption(
     "검토 소요 시간과 AI 후보 시각적 근거 적절성입니다. "
@@ -251,7 +304,7 @@ st.subheader("🛡 감사 로그 완전성")
 st.caption("이 영상에 대해 upload·access·analyze·export·delete 액션이 기록됐는지 점검합니다.")
 audit_comp = report.get("audit_completeness", {})
 _ACTION_LABEL = {
-    "upload": "업로드", "access": "접근", "analyze": "분석",
+    "upload": "업로드", "access": "접근", "analyze": "分析",
     "export": "내보내기", "delete": "삭제",
 }
 audit_rows = [

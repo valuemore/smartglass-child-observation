@@ -5,3 +5,4 @@ opencv-python>=4.8.0
 scenedetect>=0.6.4
 anthropic>=0.40.0
 python-dotenv>=1.0.0
+qrcode[pil]>=7.4.2

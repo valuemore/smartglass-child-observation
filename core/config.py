@@ -39,5 +39,17 @@ VISION_EXTERNAL_CONFIRM_REQUIRED = os.getenv("VISION_EXTERNAL_CONFIRM_REQUIRED",
 # 장면 선별 설정 — AI 분석 대상 장면/프레임 수 상한 (비용·처리 시간 통제)
 # ---------------------------------------------------------------------------
 VISION_SCENE_SELECTION_ENABLED = os.getenv("VISION_SCENE_SELECTION_ENABLED", "true").lower() == "true"
-VISION_MAX_SCENES_PER_VIDEO    = int(os.getenv("VISION_MAX_SCENES_PER_VIDEO", "10"))
+VISION_MAX_SCENES_PER_VIDEO    = int(os.getenv("VISION_MAX_SCENES_PER_VIDEO", "5"))
 VISION_MIN_SCENE_DURATION_SEC  = float(os.getenv("VISION_MIN_SCENE_DURATION_SEC", "2.0"))
+VISION_DEFAULT_MAX_SCENES_TEACHER = int(os.getenv("VISION_DEFAULT_MAX_SCENES_TEACHER", "5"))
+
+# ---------------------------------------------------------------------------
+# 인증 설정 — 비밀번호는 .env에서 관리, 코드 하드코딩 금지
+# ---------------------------------------------------------------------------
+TEACHER_USERS    = os.getenv("TEACHER_USERS", "teacher:1234")      # "user:pass,..." 형식
+RESEARCHER_USERS = os.getenv("RESEARCHER_USERS", "researcher:1234")
+
+# ---------------------------------------------------------------------------
+# 배포·모바일 설정
+# ---------------------------------------------------------------------------
+PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8501")  # QR코드·모바일 링크용
