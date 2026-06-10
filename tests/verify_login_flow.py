@@ -65,12 +65,12 @@ def run_verification():
             print(f"  로그인 폼 사라짐: {form_gone}")
             print(f"  역할 배지 표시: {has_badge}")
 
-            # 사이드바에서 업로드_분석 페이지로 이동 (클릭 기반)
+            # 사이드바에서 일일 영상 기록 페이지로 이동 (클릭 기반)
             try:
-                p2.locator('[data-testid="stSidebarNav"] a').filter(has_text="업로드").click()
+                p2.locator('[data-testid="stSidebarNav"] a').filter(has_text="영상").click()
                 _wait_stable(p2, 2.0)
                 p2.screenshot(path="data/e2e_screenshots/v3_03_teacher_upload.png")
-                upload_loaded = p2.locator("h1, h2, h3").filter(has_text="업로드").count() > 0
+                upload_loaded = p2.locator("h1, h2, h3").filter(has_text="영상").count() > 0
                 RESULTS["교사 업로드 페이지 이동"] = upload_loaded
                 print(f"  업로드 페이지 이동: {upload_loaded}")
 

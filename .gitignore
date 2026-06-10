@@ -5,6 +5,12 @@ data/audio/
 data/clips/
 data/faces/
 
+# === data/ 루트의 참조·산출 파일 (민감 데이터 우발 커밋 방지) ===
+data/*.xlsx
+data/*.csv
+data/*.json
+data/e2e_screenshots/
+
 # === 로컬 DB ===
 data/app.db
 data/*.db
