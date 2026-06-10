@@ -21,6 +21,9 @@ DEFAULT_ACTOR = os.getenv("DEFAULT_ACTOR", "teacher_demo")  # 감사 로그 행�
 FRAME_BLUR_THRESHOLD = 50.0                 # Laplacian blur_score 기준 (이상이면 kept=True)
 FALLBACK_SCENE_INTERVAL_SEC = 10.0          # PySceneDetect 실패 시 고정 간격 분할 기준(초)
 
+# 수집 균형 대시보드 — 유아×누리영역 최소 관찰자료 권장 개수(미만이면 '부족' 표시)
+DASHBOARD_MIN_PER_AREA = int(os.getenv("DASHBOARD_MIN_PER_AREA", "2"))
+
 APP_TITLE = "스마트안경 기반 유아 관찰기록 지원 시스템"
 APP_CAPTION = "교사 시점 영상 분석 기반 관찰기록 초안 생성 연구용 시연 시스템"
 
