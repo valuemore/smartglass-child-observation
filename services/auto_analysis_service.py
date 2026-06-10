@@ -54,7 +54,8 @@ def run_auto_analysis(
 
     result: dict = {
         "status": "failed", "scenes": 0, "frames": 0, "clips": 0,
-        "candidates": 0, "mappings": 0, "vision_skipped": False, "error": None,
+        "candidates": 0, "mappings": 0, "face_matches": 0,
+        "vision_skipped": False, "error": None,
     }
 
     try:
@@ -102,6 +103,14 @@ def run_auto_analysis(
             # 4) 누리/KICCE 매핑
             mappings = map_candidates_for_video(video_id, repo)
             result["mappings"] = len(mappings)
+
+        # 4-1) 얼굴 매칭 후보 (동의 ON 시에만, 로컬 전용·후보만). 비치명적.
+        try:
+            from services.face.face_match_service import propose_matches
+            fmcs = propose_matches(repo, video_id, actor=actor)
+            result["face_matches"] = len(fmcs)
+        except Exception:
+            result["face_matches"] = 0
 
         # 5) 후보 누적 완료 → 상태 갱신
         latest = repo.get_video(video_id)

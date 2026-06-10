@@ -791,6 +791,14 @@ class SqliteRepository:
                     (_dt_to_str(consent_at or datetime.now()), by, child_id),
                 )
 
+    def set_child_embedding(self, child_id: str, embedding: Optional[bytes]) -> None:
+        """유아의 얼굴 임베딩을 저장한다. **동의(face_match_consent=1)한 유아만** 갱신된다(보안 가드)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE child SET face_embedding = ? WHERE id = ? AND face_match_consent = 1",
+                (embedding, child_id),
+            )
+
     def delete_child_cascade(self, child_id: str) -> int:
         """유아와 연관 얼굴 매칭 후보를 삭제한다(참조사진·임베딩 포함). audit_log는 보존."""
         total = 0
@@ -841,6 +849,23 @@ class SqliteRepository:
                 "UPDATE face_match_candidate SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?",
                 (status, decided_by, _dt_to_str(decided_at or datetime.now()), candidate_id),
             )
+
+    def delete_face_match_candidates_for_video(
+        self, video_id: str, only_proposed: bool = True,
+    ) -> int:
+        """영상의 얼굴 매칭 후보를 삭제한다. 기본은 교사 미결정(proposed)만 삭제해
+        확정/기각(confirmed/rejected) 결과를 보존한다(재분석 멱등성)."""
+        with self._connect() as conn:
+            if only_proposed:
+                c = conn.execute(
+                    "DELETE FROM face_match_candidate WHERE video_id = ? AND status = 'proposed'",
+                    (video_id,),
+                )
+            else:
+                c = conn.execute(
+                    "DELETE FROM face_match_candidate WHERE video_id = ?", (video_id,),
+                )
+            return c.rowcount
 
     # ------------------------------------------------------------------
     # WeeklyDraft — 주간/격주 관찰기록 초안

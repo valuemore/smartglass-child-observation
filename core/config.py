@@ -24,6 +24,16 @@ FALLBACK_SCENE_INTERVAL_SEC = 10.0          # PySceneDetect 실패 시 고정 �
 # 수집 균형 대시보드 — 유아×누리영역 최소 관찰자료 권장 개수(미만이면 '부족' 표시)
 DASHBOARD_MIN_PER_AREA = int(os.getenv("DASHBOARD_MIN_PER_AREA", "2"))
 
+# ---------------------------------------------------------------------------
+# 얼굴 매칭 (동의 기반·로컬 전용) — V2-4
+#   FACE_EMBED_PROVIDER: "mock"(기본) | 실제 임베더(향후 어댑터로 교체)
+#   임베딩·참조사진은 외부로 전송하지 않는다. 매칭은 후보만 제시하고 교사가 확정한다.
+# ---------------------------------------------------------------------------
+FACE_EMBED_PROVIDER = os.getenv("FACE_EMBED_PROVIDER", "mock")
+FACE_EMBED_DIM = int(os.getenv("FACE_EMBED_DIM", "64"))
+FACE_MATCH_MIN_CONFIDENCE = float(os.getenv("FACE_MATCH_MIN_CONFIDENCE", "0.5"))  # 이 미만은 후보 제외
+FACE_MATCH_TOP_K = int(os.getenv("FACE_MATCH_TOP_K", "1"))  # temp_child_id별 매칭 후보 수
+
 APP_TITLE = "스마트안경 기반 유아 관찰기록 지원 시스템"
 APP_CAPTION = "교사 시점 영상 분석 기반 관찰기록 초안 생성 연구용 시연 시스템"
 
