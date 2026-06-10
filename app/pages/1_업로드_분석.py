@@ -375,6 +375,7 @@ else:
                     st.success(
                         f"분析 완료 — provider={_info['provider']}, "
                         f"model={_info['model']}, "
+                        f"장면 {_info.get('total_scenes','?')}개 중 {_info['segments']}개 선별, "
                         f"관찰 후보 {_info['stored']}개 저장 (폐기 {_info['discarded']}개), "
                         f"누리/KICCE 매핑 {len(_mappings)}건"
                     )

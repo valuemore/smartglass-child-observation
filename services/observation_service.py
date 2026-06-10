@@ -5,8 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from core.config import DEFAULT_ACTOR
+from core.config import (
+    DEFAULT_ACTOR,
+    VISION_MAX_SCENES_PER_VIDEO,
+    VISION_MIN_SCENE_DURATION_SEC,
+    VISION_SCENE_SELECTION_ENABLED,
+)
 from core.schemas import AuditLog, FrameRef, ObservationCandidate, SegmentAnalysisRequest
+from services.video_preprocess_service import select_scenes_for_analysis
 from services.vision.mock_adapter import MockVisionAdapter
 from storage.sqlite_repository import SqliteRepository
 
@@ -35,7 +41,18 @@ def generate_mock_observation_candidates(
     # 중복 방지: 이 영상의 기존 관찰 후보와 연결된 매핑을 먼저 삭제한다.
     repo.delete_candidates_for_video(video_id)
 
-    scenes = repo.list_scenes(video_id)
+    all_scenes = repo.list_scenes(video_id)
+    all_frames_flat = [f for s in all_scenes for f in repo.list_frames(s.id)]
+
+    if VISION_SCENE_SELECTION_ENABLED:
+        scenes = select_scenes_for_analysis(
+            all_scenes, all_frames_flat,
+            max_scenes=VISION_MAX_SCENES_PER_VIDEO,
+            min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
+        )
+    else:
+        scenes = all_scenes
+
     all_candidates: list[ObservationCandidate] = []
 
     for scene in scenes:
@@ -67,7 +84,8 @@ def generate_mock_observation_candidates(
         action="analyze",
         detail=(
             f"mock_vision_candidate_generation "
-            f"scenes={len(scenes)} "
+            f"total_scenes={len(all_scenes)} "
+            f"selected_scenes={len(scenes)} "
             f"candidates={len(all_candidates)}"
         ),
         created_at=datetime.now(),
@@ -100,7 +118,18 @@ def generate_observation_candidates_with_provider(
 
     repo.delete_candidates_for_video(video_id)
 
-    scenes = repo.list_scenes(video_id)
+    all_scenes = repo.list_scenes(video_id)
+    all_frames_flat = [f for s in all_scenes for f in repo.list_frames(s.id)]
+
+    if VISION_SCENE_SELECTION_ENABLED:
+        scenes = select_scenes_for_analysis(
+            all_scenes, all_frames_flat,
+            max_scenes=VISION_MAX_SCENES_PER_VIDEO,
+            min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
+        )
+    else:
+        scenes = all_scenes
+
     all_candidates: list[ObservationCandidate] = []
     total_frames = 0
     total_discarded = 0
@@ -131,6 +160,7 @@ def generate_observation_candidates_with_provider(
 
     provider_info = {
         **provider_info,
+        "total_scenes": len(all_scenes),
         "segments": len(scenes),
         "frames": total_frames,
         "discarded": total_discarded,
@@ -146,7 +176,8 @@ def generate_observation_candidates_with_provider(
             f"vision_candidate_generation "
             f"provider={provider_info['provider']} "
             f"dry_run={provider_info['dry_run']} "
-            f"segments={provider_info['segments']} "
+            f"total_scenes={provider_info['total_scenes']} "
+            f"selected_scenes={provider_info['segments']} "
             f"frames={provider_info['frames']} "
             f"stored={provider_info['stored']} "
             f"discarded={provider_info['discarded']}"

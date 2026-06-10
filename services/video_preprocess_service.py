@@ -21,6 +21,9 @@ from core.config import (
     FALLBACK_SCENE_INTERVAL_SEC,
     FRAME_BLUR_THRESHOLD,
     FRAMES_DIR,
+    VISION_MAX_SCENES_PER_VIDEO,
+    VISION_MIN_SCENE_DURATION_SEC,
+    VISION_SCENE_SELECTION_ENABLED,
 )
 from core.schemas import AuditLog, Frame, Scene, Video
 from storage.sqlite_repository import SqliteRepository
@@ -255,6 +258,83 @@ def _laplacian_blur_score(img) -> float:
     import cv2  # type: ignore
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+# ---------------------------------------------------------------------------
+# AI 분析 대상 장면 선별
+# ---------------------------------------------------------------------------
+
+def select_scenes_for_analysis(
+    scenes: list[Scene],
+    frames: list[Frame],
+    max_scenes: int = VISION_MAX_SCENES_PER_VIDEO,
+    min_scene_duration: float = VISION_MIN_SCENE_DURATION_SEC,
+) -> list[Scene]:
+    """전처리된 장면 목록에서 AI 비전 분析에 보낼 대표 장면을 선별한다.
+
+    전략:
+    1. min_scene_duration 미만 장면 제거 (너무 짧아 의미 있는 관찰 어려움)
+    2. 남은 장면이 max_scenes 이하면 그대로 반환
+    3. 전체 영상을 max_scenes개 시간 구간으로 균등 분할 후 구간마다 1개 선택
+       - kept=True 프레임이 있는 장면 우선
+       - 없으면 구간 내 가장 긴 장면
+    4. time_start 기준 정렬 반환
+
+    kept=True 프레임이 하나도 없는 장면은 모든 단계에서 제외된다.
+    """
+    if not scenes:
+        return []
+
+    # kept 프레임 인덱스 구축 (scene_id → 보유 여부)
+    kept_scene_ids: set[str] = {f.scene_id for f in frames if f.kept}
+
+    # 1단계: kept 프레임이 있고 충분히 긴 장면만 후보로
+    candidates = [
+        s for s in scenes
+        if s.id in kept_scene_ids
+        and (s.time_end - s.time_start) >= min_scene_duration
+    ]
+
+    if not candidates:
+        # 모든 장면이 걸러지면 kept 조건만 완화해 재시도
+        candidates = [s for s in scenes if s.id in kept_scene_ids]
+
+    if not candidates:
+        return []
+
+    if len(candidates) <= max_scenes:
+        return sorted(candidates, key=lambda s: s.time_start)
+
+    # 2단계: 균등 시간 구간 샘플링
+    t_min = candidates[0].time_start
+    t_max = candidates[-1].time_end
+    interval = (t_max - t_min) / max_scenes
+
+    selected: list[Scene] = []
+    for i in range(max_scenes):
+        bucket_start = t_min + i * interval
+        bucket_end = bucket_start + interval
+
+        # 구간과 겹치는 장면
+        in_bucket = [
+            s for s in candidates
+            if s.time_start < bucket_end and s.time_end > bucket_start
+        ]
+        if not in_bucket:
+            continue
+
+        # kept 프레임 있는 장면 우선, 같으면 가장 긴 장면
+        best = max(
+            in_bucket,
+            key=lambda s: (
+                1 if s.id in kept_scene_ids else 0,
+                s.time_end - s.time_start,
+            ),
+        )
+        if best not in selected:
+            selected.append(best)
+
+    return sorted(selected, key=lambda s: s.time_start)
 
 
 # ---------------------------------------------------------------------------
