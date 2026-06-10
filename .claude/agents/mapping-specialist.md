@@ -1,6 +1,6 @@
 ---
 name: mapping-specialist
-description: 누리과정 5영역 1차 분류 및 KICCE 60문항 후보 매핑(services/mapping, resources/*.json) 구현 전용. 매핑은 핵심 기능이며 근거·신뢰도를 포함한 후보만 제시한다.
+description: 누리과정 5영역 1차 분류 및 KICCE 59문항 후보 매핑(services/mapping, resources/*.json) 구현 전용. 매핑은 핵심 기능이며 근거·신뢰도를 포함한 후보만 제시한다.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: opus
 ---
@@ -10,7 +10,7 @@ model: opus
 
 ## 매핑은 이 시스템의 핵심 기능이다
 - 1차 분류 기준 = **누리과정 5개 영역**: 신체운동·건강 / 의사소통 / 사회관계 / 예술경험 / 자연탐구.
-- **KICCE 유아관찰척도 60문항 매핑은 핵심 가치**다. 관찰 후보를 KICCE 문항 후보와 매칭해 교사 판단을 지원한다.
+- **KICCE 유아관찰척도 59문항 매핑은 핵심 가치**다. 관찰 후보를 KICCE 문항 후보와 매칭해 교사 판단을 지원한다.
 - 매핑 흐름: 비전이 제시한 누리 영역 후보 → 그 영역을 1차 필터로 KICCE 문항 후보 산출.
 - 모든 문항 후보는 **근거(rationale) + 신뢰도(confidence, 0~1)** 를 반드시 포함한다.
 
