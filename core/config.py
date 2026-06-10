@@ -1,6 +1,14 @@
 """앱 공통 설정."""
 
 import os
+from pathlib import Path
+
+# 프로젝트 루트의 .env 를 os.getenv 호출 전에 로드한다 (없으면 무시, override=False)
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:
+    pass
 
 DB_PATH = "data/app.db"
 VIDEOS_DIR = "data/videos"                  # 원본 영상 저장 루트 (git 제외)
