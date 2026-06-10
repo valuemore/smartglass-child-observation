@@ -61,12 +61,17 @@ render_user_sidebar()
 # ---------------------------------------------------------------------------
 # 영상 선택 (관찰 후보가 있는 영상만)
 # ---------------------------------------------------------------------------
-videos_with_candidates = [v for v in repo.list_videos() if repo.list_candidates(v.id)]
+role = st.session_state.get("role", "teacher")
+owner_filter = get_current_actor() if role == "teacher" else None
+videos_with_candidates = [
+    v for v in repo.list_videos(owner=owner_filter)
+    if repo.list_candidates(v.id)
+]
 
 if not videos_with_candidates:
     st.warning(
         "검토할 관찰 후보가 있는 영상이 없습니다. "
-        "먼저 '업로드 및 분析' 화면에서 관찰 후보를 생성해주세요."
+        "먼저 '업로드 및 분석' 화면에서 관찰 후보를 생성해주세요."
     )
     st.stop()
 
@@ -170,15 +175,22 @@ for item in review_items:
         def _elapsed_seconds() -> int:
             return max(0, int(time.time() - st.session_state.get(open_key, time.time())))
 
-        # 썸네일 + 신뢰도
-        _col_thumb, _col_meta = st.columns([1, 3])
-        with _col_thumb:
-            _kept_frames = [f for f in repo.list_frames(cand.scene_id) if f.kept]
-            if _kept_frames and Path(_kept_frames[0].image_path).exists():
-                st.image(_kept_frames[0].image_path, caption=f"{cand.time_start:.1f}s", use_container_width=True)
+        # 클립 재생 (fallback: 썸네일) + 신뢰도
+        col_clip, col_meta = st.columns([1, 3])
+        with col_clip:
+            clips = repo.get_clips_for_scene(cand.scene_id, cand.video_id)
+            if clips and Path(clips[0].local_clip_path).exists():
+                st.video(clips[0].local_clip_path)
+                st.caption(f"근거 클립  {clips[0].start_sec:.1f}s – {clips[0].end_sec:.1f}s")
             else:
-                st.caption("썸네일 없음")
-        with _col_meta:
+                # fallback: 기존 썸네일 이미지
+                _kept_frames = [f for f in repo.list_frames(cand.scene_id) if f.kept]
+                if _kept_frames and Path(_kept_frames[0].image_path).exists():
+                    st.image(_kept_frames[0].image_path, use_container_width=True)
+                    st.caption(f"{cand.time_start:.1f}s")
+                else:
+                    st.caption("미리보기 없음")
+        with col_meta:
             st.progress(float(cand.confidence), text=f"AI 신뢰도 {cand.confidence:.0%}")
             st.markdown(f"**관찰 행동**: {cand.observed_behavior}")
             st.caption(f"시각적 근거: {cand.visual_evidence}")

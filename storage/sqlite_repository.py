@@ -19,6 +19,7 @@ from typing import Optional
 from core.schemas import (
     AuditLog,
     ChildMatch,
+    Clip,
     FinalRecord,
     Frame,
     InteractionEvidence,
@@ -71,8 +72,27 @@ class SqliteRepository:
             height          INTEGER NOT NULL DEFAULT 0,
             status          TEXT NOT NULL DEFAULT 'uploaded',
             created_at      TEXT NOT NULL,
-            retention_until TEXT
+            retention_until TEXT,
+            owner           TEXT NOT NULL DEFAULT '',
+            institution     TEXT NOT NULL DEFAULT '',
+            class_name      TEXT NOT NULL DEFAULT '',
+            observation_context TEXT NOT NULL DEFAULT '',
+            notes           TEXT NOT NULL DEFAULT ''
         );
+
+        CREATE TABLE IF NOT EXISTS clip (
+            id                          TEXT PRIMARY KEY,
+            video_id                    TEXT NOT NULL REFERENCES video(id),
+            source_scene_ids            TEXT NOT NULL DEFAULT '[]',
+            start_sec                   REAL NOT NULL DEFAULT 0,
+            end_sec                     REAL NOT NULL DEFAULT 0,
+            duration_sec                REAL NOT NULL DEFAULT 0,
+            local_clip_path             TEXT NOT NULL DEFAULT '',
+            selected_for_vision_analysis INTEGER NOT NULL DEFAULT 1,
+            selection_reason            TEXT NOT NULL DEFAULT '',
+            created_at                  TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_clip_video ON clip(video_id);
 
         CREATE TABLE IF NOT EXISTS scene (
             id          TEXT PRIMARY KEY,
@@ -180,6 +200,13 @@ class SqliteRepository:
                 "review_seconds": "INTEGER",
                 "evidence_adequacy": "TEXT",
             })
+            self._ensure_columns(conn, "video", {
+                "owner":               "TEXT NOT NULL DEFAULT ''",
+                "institution":         "TEXT NOT NULL DEFAULT ''",
+                "class_name":          "TEXT NOT NULL DEFAULT ''",
+                "observation_context": "TEXT NOT NULL DEFAULT ''",
+                "notes":               "TEXT NOT NULL DEFAULT ''",
+            })
 
     @staticmethod
     def _ensure_columns(conn, table: str, columns: dict[str, str]) -> None:
@@ -197,8 +224,9 @@ class SqliteRepository:
         sql = """
         INSERT OR REPLACE INTO video
             (id, filename, stored_path, duration_sec, fps, width, height,
-             status, created_at, retention_until)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             status, created_at, retention_until,
+             owner, institution, class_name, observation_context, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._connect() as conn:
             conn.execute(sql, (
@@ -206,6 +234,8 @@ class SqliteRepository:
                 video.duration_sec, video.fps, video.width, video.height,
                 video.status, _dt_to_str(video.created_at),
                 _dt_to_str(video.retention_until),
+                video.owner, video.institution, video.class_name,
+                video.observation_context, video.notes,
             ))
 
     def get_video(self, video_id: str) -> Optional[Video]:
@@ -215,11 +245,16 @@ class SqliteRepository:
             ).fetchone()
         return _row_to_video(row) if row else None
 
-    def list_videos(self) -> list[Video]:
+    def list_videos(self, owner: Optional[str] = None) -> list[Video]:
+        """영상 목록 조회. owner가 None이면 전체, 값이 있으면 해당 owner의 영상만."""
+        if owner is not None:
+            sql = "SELECT * FROM video WHERE owner = ? ORDER BY created_at"
+            params: tuple = (owner,)
+        else:
+            sql = "SELECT * FROM video ORDER BY created_at"
+            params = ()
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM video ORDER BY created_at"
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [_row_to_video(r) for r in rows]
 
     def delete_video_cascade(self, video_id: str) -> int:
@@ -253,6 +288,8 @@ class SqliteRepository:
             c = conn.execute("DELETE FROM child_match WHERE video_id = ?", (video_id,))
             total += c.rowcount
             c = conn.execute("DELETE FROM audio_segment WHERE video_id = ?", (video_id,))
+            total += c.rowcount
+            c = conn.execute("DELETE FROM clip WHERE video_id = ?", (video_id,))
             total += c.rowcount
             c = conn.execute("DELETE FROM video WHERE id = ?", (video_id,))
             total += c.rowcount
@@ -313,6 +350,46 @@ class SqliteRepository:
             image_path=r["image_path"], blur_score=r["blur_score"],
             kept=bool(r["kept"]),
         ) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Clip — 근거 클립
+    # ------------------------------------------------------------------
+
+    def add_clips(self, clips: list[Clip]) -> None:
+        sql = """
+        INSERT OR IGNORE INTO clip
+            (id, video_id, source_scene_ids, start_sec, end_sec, duration_sec,
+             local_clip_path, selected_for_vision_analysis, selection_reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        with self._connect() as conn:
+            conn.executemany(sql, [
+                (c.id, c.video_id, json.dumps(c.source_scene_ids),
+                 c.start_sec, c.end_sec, c.duration_sec,
+                 c.local_clip_path, int(c.selected_for_vision_analysis),
+                 c.selection_reason, _dt_to_str(c.created_at))
+                for c in clips
+            ])
+
+    def update_clip_path(self, clip_id: str, local_clip_path: str) -> None:
+        """ffmpeg 추출 완료 후 클립 경로를 업데이트한다."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE clip SET local_clip_path = ? WHERE id = ?",
+                (local_clip_path, clip_id),
+            )
+
+    def list_clips(self, video_id: str) -> list[Clip]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM clip WHERE video_id = ? ORDER BY start_sec",
+                (video_id,),
+            ).fetchall()
+        return [_row_to_clip(r) for r in rows]
+
+    def get_clips_for_scene(self, scene_id: str, video_id: str) -> list[Clip]:
+        """주어진 scene_id가 source_scene_ids에 포함된 클립 목록을 반환한다."""
+        return [c for c in self.list_clips(video_id) if scene_id in c.source_scene_ids]
 
     # ------------------------------------------------------------------
     # ObservationCandidate
@@ -520,12 +597,30 @@ class SqliteRepository:
 # ---------------------------------------------------------------------------
 
 def _row_to_video(r: sqlite3.Row) -> Video:
+    keys = set(r.keys())
     return Video(
         id=r["id"], filename=r["filename"], stored_path=r["stored_path"],
         duration_sec=r["duration_sec"], fps=r["fps"],
         width=r["width"], height=r["height"], status=r["status"],
         created_at=_str_to_dt(r["created_at"]),
         retention_until=_str_to_dt(r["retention_until"]),
+        owner=r["owner"] if "owner" in keys else "",
+        institution=r["institution"] if "institution" in keys else "",
+        class_name=r["class_name"] if "class_name" in keys else "",
+        observation_context=r["observation_context"] if "observation_context" in keys else "",
+        notes=r["notes"] if "notes" in keys else "",
+    )
+
+
+def _row_to_clip(r: sqlite3.Row) -> Clip:
+    return Clip(
+        id=r["id"], video_id=r["video_id"],
+        source_scene_ids=json.loads(r["source_scene_ids"] or "[]"),
+        start_sec=r["start_sec"], end_sec=r["end_sec"], duration_sec=r["duration_sec"],
+        local_clip_path=r["local_clip_path"] or "",
+        selected_for_vision_analysis=bool(r["selected_for_vision_analysis"]),
+        selection_reason=r["selection_reason"] or "",
+        created_at=_str_to_dt(r["created_at"]),
     )
 
 

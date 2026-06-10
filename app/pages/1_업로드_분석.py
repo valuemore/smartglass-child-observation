@@ -6,7 +6,7 @@ from datetime import datetime
 import streamlit as st
 
 from core.config import (
-    DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR,
+    DEFAULT_ACTOR, CLIPS_DIR, FRAMES_DIR, VIDEOS_DIR,
     VISION_DRY_RUN, VISION_MAX_SCENES_PER_VIDEO, VISION_MIN_SCENE_DURATION_SEC,
     VISION_PROVIDER, VISION_DEFAULT_MAX_SCENES_TEACHER,
 )
@@ -18,10 +18,11 @@ from services.observation_service import (
 from services.mapping.mapping_service import map_candidates_for_video
 from services.video_service import save_uploaded_video
 from services.video_preprocess_service import preprocess_video, select_scenes_for_analysis
+from services.clip_service import select_evidence_clips, extract_clips
 from storage.sqlite_repository import SqliteRepository
 
 st.set_page_config(
-    page_title="영상 업로드 및 분析",
+    page_title="영상 업로드 및 분석",
     page_icon="📹",
     layout="wide",
 )
@@ -32,13 +33,13 @@ from _responsive import inject_responsive_css
 require_login()
 inject_responsive_css()
 
-st.title("📹 영상 업로드 및 배치 분析")
-st.caption("교사 시점 스마트안경 영상을 업로드하고 AI 배치 분析을 실행합니다.")
+st.title("📹 영상 업로드 및 배치 분석")
+st.caption("교사 시점 스마트안경 영상을 업로드하고 AI 배치 분석을 실행합니다.")
 
 with st.expander("📌 이 시스템의 원칙 (클릭하여 펼치기)", expanded=False):
     st.markdown(
         "- **원본 영상은 로케에만 저장**됩니다. 외부 서버로 전송되지 않습니다.\n"
-        "- 업로드 및 분析 시 **감사 로그(audit_log)** 가 기록됩니다.\n"
+        "- 업로드 및 분석 시 **감사 로그(audit_log)** 가 기록됩니다.\n"
         "- AI는 관찰 후보를 *제안*할 뿐, 기록을 자동 확정하지 않습니다.\n"
         "- 유아는 `child_A`, `child_B` 임시 ID로만 식별됩니다. 교사가 가명 ID와 매칭합니다.\n"
         "- **관찰수준 점수는 산출하지 않습니다.**"
@@ -182,6 +183,50 @@ def _show_candidate_with_mappings(cand, mappings: list) -> None:
 
 
 # ===========================================================================
+# 섹션 0: 관찰 메타데이터 입력 (업로드 전 필수)
+# ===========================================================================
+OBSERVATION_CONTEXTS = ["자유놀이", "야외활동", "실내놀이", "급식", "이야기나누기", "기타"]
+
+st.subheader("관찰 메타데이터 입력")
+st.caption("영상 업로드 전에 기관 및 관찰 상황을 입력해주세요.")
+
+with st.form("video_meta_form"):
+    _meta_institution = st.text_input("기관명", placeholder="예: 행복유치원", help="필수 항목")
+    _meta_class_name = st.text_input("클래스 이름", placeholder="예: 햇빛반", help="필수 항목")
+    _meta_obs_context = st.selectbox("관찰 상황", OBSERVATION_CONTEXTS)
+    _meta_notes = st.text_area(
+        "메모 (선택)",
+        placeholder="관찰과 관련된 추가 정보를 입력해주세요.",
+        max_chars=200,
+    )
+    _meta_submitted = st.form_submit_button("확인", use_container_width=True)
+
+if _meta_submitted:
+    if not _meta_institution.strip() or not _meta_class_name.strip():
+        st.error("기관명과 클래스 이름은 필수 항목입니다.")
+        st.stop()
+    st.session_state["video_meta_confirmed"] = {
+        "institution": _meta_institution.strip(),
+        "class_name": _meta_class_name.strip(),
+        "observation_context": _meta_obs_context,
+        "notes": _meta_notes.strip(),
+    }
+
+if "video_meta_confirmed" not in st.session_state:
+    st.info("기관명과 클래스 이름을 입력하고 '확인' 버튼을 눌러야 영상 업로드를 진행할 수 있습니다.")
+    st.stop()
+
+_confirmed_meta = st.session_state["video_meta_confirmed"]
+st.success(
+    f"메타데이터 확인됨 — 기관: {_confirmed_meta['institution']} / "
+    f"클래스: {_confirmed_meta['class_name']} / "
+    f"관찰 상황: {_confirmed_meta['observation_context']}"
+)
+
+st.divider()
+
+
+# ===========================================================================
 # 섹션 1: 영상 파일 업로드
 # ===========================================================================
 st.subheader("1단계: 영상 파일 업로드")
@@ -207,9 +252,14 @@ if uploaded_files:
                             "영상 ID": v.id, "길이(초)": round(v.duration_sec, 1)})
             continue
         try:
+            meta = st.session_state.get("video_meta_confirmed", {})
             video = save_uploaded_video(
                 file_bytes=uf.read(), filename=uf.name,
                 repo=repo, videos_dir=VIDEOS_DIR, actor=get_current_actor(),
+                institution=meta.get("institution", ""),
+                class_name=meta.get("class_name", ""),
+                observation_context=meta.get("observation_context", ""),
+                notes=meta.get("notes", ""),
             )
             st.session_state[state_key] = video
             results.append({"파일명": uf.name, "상태": "✅ 저장됨",
@@ -235,14 +285,17 @@ st.divider()
 # ===========================================================================
 # 섹션 2: 장면 분할 및 프레임 추출
 # ===========================================================================
-videos_all = repo.list_videos()
+# 역할에 따라 영상 목록 필터 적용
+role = st.session_state.get("role", "teacher")
+owner_filter = get_current_actor() if role == "teacher" else None
+videos_all = repo.list_videos(owner=owner_filter)
 
 if _role == "teacher":
-    # 교사 모드: 섹션 전체 숨김, 영상 선택 시 자동 전처리
+    # 교사 모드: 섹션 전체 숨김, 영상 선택 시 자동 전처리 및 클립 추출
     if videos_all:
         _teacher_video_opts = {f"{v.filename}  [{v.id}]": v.id for v in videos_all}
         _teacher_selected_label = st.selectbox(
-            "분析할 영상을 선택하세요",
+            "분석할 영상을 선택하세요",
             options=list(_teacher_video_opts.keys()),
             key="teacher_video_select",
         )
@@ -264,6 +317,26 @@ if _role == "teacher":
                     )
                 except Exception as _e:
                     st.error(f"전처리 실패: {_e}")
+                    _teacher_frames = []
+
+            # 전처리 완료 후 클립 추출
+            if _teacher_scenes:
+                with st.spinner("근거 클립을 추출하고 있습니다..."):
+                    try:
+                        _teacher_clips_raw = select_evidence_clips(
+                            video=_teacher_video,
+                            scenes=_teacher_scenes,
+                            frames=_teacher_frames,
+                        )
+                        _teacher_clips = extract_clips(
+                            video=_teacher_video,
+                            clips=_teacher_clips_raw,
+                            clips_dir=CLIPS_DIR,
+                        )
+                        repo.add_clips(_teacher_clips)
+                        st.success(f"근거 클립 {len(_teacher_clips)}개 추출 완료")
+                    except Exception as _clip_e:
+                        st.warning("근거 클립 추출 중 오류가 발생했습니다. 프레임 이미지로 분석합니다.")
         else:
             _t_frames_all = []
             for _sc in _teacher_scenes:
@@ -381,11 +454,11 @@ else:
         icon="🚨",
     )
 
-# 분析 대상 영상 목록
+# 분석 대상 영상 목록 (역할 기반 필터)
 if _role == "teacher":
-    _ai_videos = repo.list_videos()
+    _ai_videos = repo.list_videos(owner=get_current_actor())
 else:
-    _ai_videos = [v for v in repo.list_videos() if repo.list_scenes(v.id)]
+    _ai_videos = [v for v in repo.list_videos(owner=None) if repo.list_scenes(v.id)]
 
 if not _ai_videos:
     if _role == "teacher":
@@ -394,7 +467,7 @@ if not _ai_videos:
         st.warning("전처리 완료된 영상이 없습니다. 2단계에서 장면 분할 및 프레임 추출을 먼저 실행해주세요.")
 else:
     _ai_opts = {f"{v.filename}  [{v.id}]": v.id for v in _ai_videos}
-    _ai_label = st.selectbox("분析할 영상을 선택하세요", list(_ai_opts.keys()), key="ai_vision_select")
+    _ai_label = st.selectbox("분석할 영상을 선택하세요", list(_ai_opts.keys()), key="ai_vision_select")
     _ai_vid = _ai_opts[_ai_label]
 
     # 프레임 선별 미리보기
@@ -404,7 +477,7 @@ else:
 
     _default_max = VISION_DEFAULT_MAX_SCENES_TEACHER if _role == "teacher" else VISION_MAX_SCENES_PER_VIDEO
     _max_scenes_ui = st.slider(
-        "분析할 최대 장면 수",
+        "분석할 최대 장면 수",
         min_value=1,
         max_value=max(len(_all_scenes), 1),
         value=min(_default_max, max(len(_all_scenes), 1)),
@@ -453,7 +526,7 @@ else:
             _reason = st.text_input(
                 "실호출 사유 (필수, 감사 로그에 기록됨)",
                 key="ai_real_reason",
-                placeholder="예: 현장 검증 1회차 - 클립 분析",
+                placeholder="예: 현장 검증 1회차 - 클립 분석",
             )
             _confirm_cost = st.checkbox(
                 "실제 외부 API 호출과 비용 발생에 동의합니다.", key="ai_confirm_cost",
@@ -466,7 +539,7 @@ else:
                 st.caption("사유 입력과 두 확인 항목을 모두 충족해야 실행할 수 있습니다.")
 
             if st.button(
-                f"🌐 {_prov_label} 실호출 분析 실행",
+                f"🌐 {_prov_label} 실호출 분석 실행",
                 key="run_ai_real",
                 disabled=not _ready,
             ):
@@ -484,7 +557,7 @@ else:
                         )
                         _mappings = map_candidates_for_video(_ai_vid, repo)
                         st.success(
-                            f"분析 완료 — provider={_info['provider']}, "
+                            f"분석 완료 — provider={_info['provider']}, "
                             f"model={_info['model']}, "
                             f"장면 {_info.get('total_scenes','?')}개 중 {_info['segments']}개 선별, "
                             f"관찰 후보 {_info['stored']}개 저장 (폐기 {_info['discarded']}개), "
@@ -502,16 +575,16 @@ else:
                             ):
                                 _show_candidate_with_mappings(_c2, repo.list_mappings(_c2.id))
                     except Exception as _e:
-                        st.error(f"API 분析 실패: {_e}")
+                        st.error(f"API 분석 실패: {_e}")
 
-    # --- Mock 또는 dry_run 분析 버튼 ---
+    # --- Mock 또는 dry_run 분석 버튼 ---
     else:
         _btn_label = (
             "🔍 Mock 비전 관찰 후보 생성" if _ai_prov == "mock"
-            else f"🧪 {_prov_label} 테스트 분析 실행 (API 미호출)"
+            else f"🧪 {_prov_label} 테스트 분석 실행 (API 미호출)"
         )
         if st.button(_btn_label, key="run_ai_mock_or_dry"):
-            with st.spinner("분析 중..."):
+            with st.spinner("분석 중..."):
                 try:
                     if _ai_prov == "mock":
                         _new_cands = generate_mock_observation_candidates(
@@ -546,7 +619,7 @@ else:
                                 expanded=True,
                             ):
                                 _show_candidate_with_mappings(_c, repo.list_mappings(_c.id))
-                        st.markdown("**감사 로그**: 분析(analyze) 기록이 저장되었습니다. ✅")
+                        st.markdown("**감사 로그**: 분석(analyze) 기록이 저장되었습니다. ✅")
                     else:
                         _diag_scenes = repo.list_scenes(_ai_vid)
                         _diag_frames = []
@@ -566,7 +639,7 @@ else:
                         else:
                             st.error("후보 생성 로직을 점검해주세요.")
                 except Exception as _e:
-                    st.error(f"분析 실패: {_e}")
+                    st.error(f"분석 실패: {_e}")
 
 st.divider()
 st.caption(

@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide",
 )
 
-from _auth import require_login, render_user_sidebar
+from _auth import require_login, render_user_sidebar, get_current_actor
 from _responsive import inject_responsive_css
 
 require_login()
@@ -66,7 +66,9 @@ st.divider()
 
 st.subheader("등록된 영상 목록")
 
-videos = repo.list_videos()
+role = st.session_state.get("role", "teacher")
+owner_filter = get_current_actor() if role == "teacher" else None
+videos = repo.list_videos(owner=owner_filter)
 
 if not videos:
     st.info(

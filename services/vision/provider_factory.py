@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 
 from core.config import (
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
     VISION_API_KEY,
     VISION_DRY_RUN,
     VISION_MODEL,
@@ -20,6 +22,7 @@ from core.config import (
 from services.vision.base import VisionAdapter
 from services.vision.claude_adapter import ClaudeVisionAdapter
 from services.vision.external_adapter import ExternalVisionAdapter
+from services.vision.gemini_adapter import GeminiVisionAdapter
 from services.vision.mock_adapter import MockVisionAdapter
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,9 @@ def get_vision_adapter() -> tuple[VisionAdapter, dict]:
 
     if provider == "claude":
         return _try_build_claude()
+
+    if provider == "gemini":
+        return _try_build_gemini()
 
     if provider == "external":
         # 모델명이 claude- 로 시작하면 ClaudeVisionAdapter 자동 선택
@@ -130,6 +136,35 @@ def _try_build_external() -> tuple[VisionAdapter, dict]:
         VISION_MODEL,
         VISION_DRY_RUN,
     )
+    return adapter, info
+
+
+def _try_build_gemini() -> tuple[VisionAdapter, dict]:
+    """VISION_PROVIDER=gemini 시 GeminiVisionAdapter 생성 시도.
+
+    GEMINI_API_KEY 없으면 Mock 폴백.
+    클립 추출이 선행되지 않으면 analyze_segment에서 ValueError 발생.
+    """
+    if not GEMINI_API_KEY:
+        reason = "GEMINI_API_KEY가 없으므로 mock으로 폴백합니다."
+        logger.warning(reason)
+        return _mock_adapter(fallback_reason=reason)
+
+    model = GEMINI_MODEL or "gemini-1.5-flash"
+    try:
+        adapter = GeminiVisionAdapter(api_key=GEMINI_API_KEY, model=model)
+    except Exception as e:
+        reason = f"GeminiVisionAdapter 생성 실패({e}), mock으로 폴백합니다."
+        logger.warning(reason)
+        return _mock_adapter(fallback_reason=reason)
+
+    info = {
+        "provider": "gemini",
+        "model": model,
+        "dry_run": False,
+        "fallback_reason": None,
+    }
+    logger.info("GeminiVisionAdapter 초기화: model=%s", model)
     return adapter, info
 
 

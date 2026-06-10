@@ -24,6 +24,10 @@ def save_uploaded_video(
     repo: SqliteRepository,
     videos_dir: str,
     actor: str = DEFAULT_ACTOR,
+    institution: str = "",
+    class_name: str = "",
+    observation_context: str = "",
+    notes: str = "",
 ) -> Video:
     """
     업로드된 영상 바이트를 저장하고 Video 메타데이터를 DB에 기록한다.
@@ -53,6 +57,11 @@ def save_uploaded_video(
         status="uploaded",
         created_at=now,
         retention_until=now + timedelta(days=RETENTION_DAYS),
+        owner=actor,
+        institution=institution,
+        class_name=class_name,
+        observation_context=observation_context,
+        notes=notes,
     )
     repo.save_video(video)
 

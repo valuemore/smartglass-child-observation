@@ -36,7 +36,7 @@ render_user_sidebar()
 
 # ─── 페이지 제목 ─────────────────────────────────────────────────────────────
 st.title("📊 연구자 확인용 리포트")
-st.caption("교사 확정 기록 기반 연구 분析 지표입니다. 관찰수준 점수는 산출하지 않습니다.")
+st.caption("교사 확정 기록 기반 연구 분석 지표입니다. 관찰수준 점수는 산출하지 않습니다.")
 
 # ─── 1. 안내 배너 ─────────────────────────────────────────────────────────────
 with st.expander("📌 리포트 원칙 안내", expanded=False):
@@ -56,8 +56,8 @@ videos_with_cands = [v for v in all_videos if repo.list_candidates(v.id)]
 
 if not videos_with_cands:
     st.warning(
-        "分析된 영상이 없습니다. "
-        "'업로드 & 分析' 화면에서 영상을 업로드하고 分析한 뒤 다시 확인해주세요."
+        "분석된 영상이 없습니다. "
+        "'업로드 & 분석' 화면에서 영상을 업로드하고 분석한 뒤 다시 확인해주세요."
     )
     st.stop()
 
@@ -93,7 +93,7 @@ st.divider()
 
 # ─── 4. AI 후보 대비 교사 검토 결과 ───────────────────────────────────────────
 st.subheader("🔍 AI 후보 대비 교사 검토 결과")
-st.caption("AI 성능 평가가 아닌 교사 검토 워크플로우 分析 지표입니다.")
+st.caption("AI 성능 평가가 아닌 교사 검토 워크플로우 분석 지표입니다.")
 
 cols = st.columns(5)
 cols[0].metric("전체 후보", report["total_candidates"])
@@ -263,7 +263,7 @@ r2.metric(
 if ret.get("nuri_suggested", 0) == 0 and ret.get("kicce_suggested", 0) == 0:
     st.info(
         "AI 제시 후보(누리·KICCE 매핑)가 없어 유지율을 계산할 수 없습니다. "
-        "'업로드 & 分析' 화면에서 누리·KICCE 후보 매핑을 먼저 실행하세요."
+        "'업로드 & 분석' 화면에서 누리·KICCE 후보 매핑을 먼저 실행하세요."
     )
 
 st.divider()
@@ -304,7 +304,7 @@ st.subheader("🛡 감사 로그 완전성")
 st.caption("이 영상에 대해 upload·access·analyze·export·delete 액션이 기록됐는지 점검합니다.")
 audit_comp = report.get("audit_completeness", {})
 _ACTION_LABEL = {
-    "upload": "업로드", "access": "접근", "analyze": "分析",
+    "upload": "업로드", "access": "접근", "analyze": "분석",
     "export": "내보내기", "delete": "삭제",
 }
 audit_rows = [

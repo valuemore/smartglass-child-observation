@@ -13,6 +13,7 @@ except ImportError:
 DB_PATH = "data/app.db"
 VIDEOS_DIR = "data/videos"                  # 원본 영상 저장 루트 (git 제외)
 FRAMES_DIR = "data/frames"                  # 추출 프레임 저장 루트 (git 제외)
+CLIPS_DIR  = os.getenv("CLIPS_DIR", "data/clips")  # 근거 클립 저장 루트 (git 제외)
 RETENTION_DAYS = 180                        # 기본 영상 보관 기한(일)
 DEFAULT_ACTOR = os.getenv("DEFAULT_ACTOR", "teacher_demo")  # 감사 로그 행위자
 
@@ -42,6 +43,21 @@ VISION_SCENE_SELECTION_ENABLED = os.getenv("VISION_SCENE_SELECTION_ENABLED", "tr
 VISION_MAX_SCENES_PER_VIDEO    = int(os.getenv("VISION_MAX_SCENES_PER_VIDEO", "5"))
 VISION_MIN_SCENE_DURATION_SEC  = float(os.getenv("VISION_MIN_SCENE_DURATION_SEC", "2.0"))
 VISION_DEFAULT_MAX_SCENES_TEACHER = int(os.getenv("VISION_DEFAULT_MAX_SCENES_TEACHER", "5"))
+
+# ---------------------------------------------------------------------------
+# 근거 클립 설정 — ffmpeg 추출 구간 제어
+# ---------------------------------------------------------------------------
+CLIP_PADDING_SEC            = float(os.getenv("CLIP_PADDING_SEC", "2.0"))       # scene 앞뒤 여유(초)
+CLIP_MIN_DURATION_SEC       = float(os.getenv("CLIP_MIN_DURATION_SEC", "4.0"))  # 클립 최소 길이
+CLIP_MAX_DURATION_SEC       = float(os.getenv("CLIP_MAX_DURATION_SEC", "12.0")) # 클립 최대 길이
+CLIP_MAX_CLIPS_PER_VIDEO    = int(os.getenv("CLIP_MAX_CLIPS_PER_VIDEO", "5"))   # 영상당 최대 클립 수
+CLIP_MAX_TOTAL_DURATION_SEC = float(os.getenv("CLIP_MAX_TOTAL_DURATION_SEC", "60.0"))  # 총 클립 길이 상한
+
+# ---------------------------------------------------------------------------
+# Gemini API 설정 — API 키는 절대 여기에 하드코딩하지 않는다 (.env 사용)
+# ---------------------------------------------------------------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")          # 절대 하드코딩 금지
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # ---------------------------------------------------------------------------
 # 인증 설정 — 비밀번호는 .env에서 관리, 코드 하드코딩 금지

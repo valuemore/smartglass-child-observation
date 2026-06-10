@@ -146,12 +146,17 @@ def generate_observation_candidates_with_provider(
             FrameRef(frame_id=f.id, t=f.t, image_ref=f.image_path)
             for f in kept_frames
         ]
+        # 사전 추출된 근거 클립이 있으면 clip_path 전달 (Gemini 어댑터 활용)
+        clips_for_scene = repo.get_clips_for_scene(scene.id, video_id)
+        clip_path = clips_for_scene[0].local_clip_path if clips_for_scene else None
+
         request = SegmentAnalysisRequest(
             video_id=video_id,
             segment_id=scene.id,
             time_start=scene.time_start,
             time_end=scene.time_end,
             frames=frame_refs,
+            clip_path=clip_path,
         )
         result = adapter.analyze_segment(request)
         all_candidates.extend(result.observations)

@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 VideoStatus = Literal["uploaded", "analyzing", "analyzed", "reviewed"]
 SpeakerHint = Literal["teacher", "child", "unknown"]
 DecisionType = Literal["accepted", "edited", "rejected"]
-AuditAction = Literal["upload", "access", "analyze", "export", "delete"]
+AuditAction = Literal["upload", "access", "analyze", "export", "delete",
+                       "gemini_clip_upload", "gemini_clip_delete"]
 FrameLayout = Literal["sequence", "grid_2x2", "grid_3x1"]
 # AI 후보의 시각적 근거 적절성(교사 판단). 유아 발달/관찰수준 점수가 아님.
 EvidenceAdequacy = Literal["adequate", "partial", "inadequate"]
@@ -45,6 +46,12 @@ class Video(BaseModel):
     status: VideoStatus = "uploaded"
     created_at: datetime
     retention_until: Optional[datetime] = None
+    # 업로드 소유자 및 관찰 맥락 메타데이터
+    owner: str = ""                  # 업로드 교사 username (get_current_actor() 자동 세팅)
+    institution: str = ""            # 기관명
+    class_name: str = ""             # 클래스 이름
+    observation_context: str = ""    # 관찰 상황 (자유놀이·야외활동 등 고정 선택지)
+    notes: str = ""                  # 선택적 메모
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +217,10 @@ class SegmentAnalysisRequest(BaseModel):
     frames: list[FrameRef] = Field(min_length=1)
     frame_layout: FrameLayout = "sequence"
     audio_support: Optional[AudioSupportContext] = None
+    clip_path: Optional[str] = Field(
+        default=None,
+        description="사전 추출된 근거 클립 경로 (Gemini 어댑터 전용). 원본 영상 경로 아님.",
+    )
 
     @model_validator(mode="after")
     def _end_after_start(self) -> "SegmentAnalysisRequest":
@@ -268,7 +279,33 @@ class FinalRecord(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 14. AuditLog — 영상 접근·분석·삭제 감사 로그
+# 14. Clip — 근거 클립 (선별 장면에서 ffmpeg로 추출한 짧은 동영상)
+#
+#     원본 영상은 보존하고 선별 구간만 추출한다.
+#     외부 API(Gemini)에는 이 클립만 전송하고 원본 영상은 전송하지 않는다.
+# ---------------------------------------------------------------------------
+
+class Clip(BaseModel):
+    id: str                                  # clip_{video_id}_{idx:03d}
+    video_id: str
+    source_scene_ids: list[str] = Field(default_factory=list)  # 이 클립의 원본 scene id 목록
+    start_sec: float = Field(ge=0.0)
+    end_sec: float = Field(ge=0.0)
+    duration_sec: float = Field(ge=0.0)
+    local_clip_path: str = ""               # data/clips/{video_id}/{id}.mp4
+    selected_for_vision_analysis: bool = True
+    selection_reason: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "Clip":
+        if self.end_sec <= self.start_sec:
+            raise ValueError(f"end_sec({self.end_sec}) 은 start_sec({self.start_sec}) 보다 커야 합니다.")
+        return self
+
+
+# ---------------------------------------------------------------------------
+# 15. AuditLog — 영상 접근·분析·삭제 감사 로그
 # ---------------------------------------------------------------------------
 
 class AuditLog(BaseModel):
