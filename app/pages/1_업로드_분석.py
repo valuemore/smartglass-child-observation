@@ -5,7 +5,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR, VISION_DRY_RUN, VISION_PROVIDER
+from core.config import DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR, VISION_DRY_RUN, VISION_MAX_SCENES_PER_VIDEO, VISION_MIN_SCENE_DURATION_SEC, VISION_PROVIDER
 from core.schemas import AuditLog
 from services.observation_service import (
     generate_mock_observation_candidates,
@@ -13,7 +13,7 @@ from services.observation_service import (
 )
 from services.mapping.mapping_service import map_candidates_for_video
 from services.video_service import save_uploaded_video
-from services.video_preprocess_service import preprocess_video
+from services.video_preprocess_service import preprocess_video, select_scenes_for_analysis
 from storage.sqlite_repository import SqliteRepository
 
 st.set_page_config(
@@ -326,6 +326,36 @@ else:
     _ai_label = st.selectbox("분석할 영상을 선택하세요", list(_ai_opts.keys()), key="ai_vision_select")
     _ai_vid = _ai_opts[_ai_label]
 
+    # ── 프레임 선별 미리보기 ─────────────────────────────────────────
+    _all_scenes  = repo.list_scenes(_ai_vid)
+    _all_frames  = [f for s in _all_scenes for f in repo.list_frames(s.id)]
+    _kept_frames = [f for f in _all_frames if f.kept]
+
+    _max_scenes_ui = st.slider(
+        "분析할 최대 장면 수",
+        min_value=1,
+        max_value=max(len(_all_scenes), 1),
+        value=min(VISION_MAX_SCENES_PER_VIDEO, max(len(_all_scenes), 1)),
+        step=1,
+        key="ai_max_scenes_slider",
+        help="장면 수가 많을수록 API 호출 횟수와 비용이 증가합니다.",
+    )
+    _preview_scenes = select_scenes_for_analysis(
+        _all_scenes, _all_frames,
+        max_scenes=_max_scenes_ui,
+        min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
+    )
+    _preview_kept = sum(
+        len([f for f in repo.list_frames(s.id) if f.kept])
+        for s in _preview_scenes
+    )
+    _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+    _pc1.metric("전체 장면", len(_all_scenes))
+    _pc2.metric("전체 kept 프레임", len(_kept_frames))
+    _pc3.metric("선별 장면", len(_preview_scenes))
+    _pc4.metric("선별 프레임 (API 전송)", _preview_kept)
+    # ────────────────────────────────────────────────────────────────
+
     # 기존 후보 표시
     _existing_cands = repo.list_candidates(_ai_vid)
     if _existing_cands:
@@ -370,6 +400,7 @@ else:
                 try:
                     _cands, _info = generate_observation_candidates_with_provider(
                         video_id=_ai_vid, repo=repo, actor=DEFAULT_ACTOR,
+                        max_scenes=_max_scenes_ui,
                     )
                     _mappings = map_candidates_for_video(_ai_vid, repo)
                     st.success(
@@ -405,12 +436,14 @@ else:
                     if _ai_prov == "mock":
                         _new_cands = generate_mock_observation_candidates(
                             video_id=_ai_vid, repo=repo, actor=DEFAULT_ACTOR,
+                            max_scenes=_max_scenes_ui,
                         )
                         _info_label = "Mock"
                         _fallback = None
                     else:
                         _new_cands, _info = generate_observation_candidates_with_provider(
                             video_id=_ai_vid, repo=repo, actor=DEFAULT_ACTOR,
+                            max_scenes=_max_scenes_ui,
                         )
                         _info_label = (
                             f"dry_run provider={_info['provider']} "

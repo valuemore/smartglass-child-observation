@@ -65,7 +65,8 @@ class KicceMapper:
             matched = [kw for kw in item["keywords"] if kw in text]
             # example_cases 의 단어 일부도 보조 매칭(부분 포함)
             example_hit = any(
-                _example_overlap(ex, text) for ex in item.get("example_cases", [])
+                _example_overlap(ex, text)
+                for ex in item.get("example_cases", []) + item.get("level_descriptions", [])
             )
             if matched or example_hit:
                 scored.append((item, matched))

@@ -22,6 +22,7 @@ def generate_mock_observation_candidates(
     repo: SqliteRepository,
     adapter=None,
     actor: str = DEFAULT_ACTOR,
+    max_scenes: int | None = None,
 ) -> list[ObservationCandidate]:
     """전처리된 scene/frame 데이터로 Mock 관찰 후보를 생성해 DB에 저장한다.
 
@@ -47,7 +48,7 @@ def generate_mock_observation_candidates(
     if VISION_SCENE_SELECTION_ENABLED:
         scenes = select_scenes_for_analysis(
             all_scenes, all_frames_flat,
-            max_scenes=VISION_MAX_SCENES_PER_VIDEO,
+            max_scenes=max_scenes if max_scenes is not None else VISION_MAX_SCENES_PER_VIDEO,
             min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
         )
     else:
@@ -98,6 +99,7 @@ def generate_observation_candidates_with_provider(
     video_id: str,
     repo: SqliteRepository,
     actor: str = DEFAULT_ACTOR,
+    max_scenes: int | None = None,
 ) -> tuple[list[ObservationCandidate], dict]:
     """팩토리가 선택한 비전 어댑터(mock 또는 external)로 관찰 후보를 생성해 DB에 저장한다.
 
@@ -124,7 +126,7 @@ def generate_observation_candidates_with_provider(
     if VISION_SCENE_SELECTION_ENABLED:
         scenes = select_scenes_for_analysis(
             all_scenes, all_frames_flat,
-            max_scenes=VISION_MAX_SCENES_PER_VIDEO,
+            max_scenes=max_scenes if max_scenes is not None else VISION_MAX_SCENES_PER_VIDEO,
             min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
         )
     else:
