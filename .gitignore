@@ -60,7 +60,6 @@ ENV/
 .pydevproject
 
 # === Streamlit ===
-.streamlit/
 .streamlit/secrets.toml
 
 # === 로그 ===
