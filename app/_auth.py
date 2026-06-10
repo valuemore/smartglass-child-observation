@@ -142,3 +142,11 @@ def render_user_sidebar() -> None:
                 st.image(buf, caption="스마트폰으로 스캔", width=160)
         except ImportError:
             pass
+
+    # Safe AI 패널 + AI비서(제한형) — 모든 페이지 공통 (V2-7)
+    try:
+        from _safe_ai import render_safe_ai_panel, render_ai_assistant
+        render_safe_ai_panel()
+        render_ai_assistant()
+    except Exception:
+        pass
