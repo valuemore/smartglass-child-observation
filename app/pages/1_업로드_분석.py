@@ -371,22 +371,24 @@ else:
                     _cands, _info = generate_observation_candidates_with_provider(
                         video_id=_ai_vid, repo=repo, actor=DEFAULT_ACTOR,
                     )
-                    _mappings_count = map_candidates_for_video(_ai_vid, repo)
+                    _mappings = map_candidates_for_video(_ai_vid, repo)
                     st.success(
                         f"분析 완료 — provider={_info['provider']}, "
                         f"model={_info['model']}, "
-                        f"저장={_info['stored']}개, 폐기={_info['discarded']}개, "
-                        f"매핑={_mappings_count}건"
+                        f"관찰 후보 {_info['stored']}개 저장 (폐기 {_info['discarded']}개), "
+                        f"누리/KICCE 매핑 {len(_mappings)}건"
                     )
                     if _info.get("fallback_reason"):
                         st.caption(f"폴백 사유: {_info['fallback_reason']}")
                     st.markdown("**감사 로그**: 승인 사유 및 analyze 기록이 저장되었습니다. ✅")
                     for _c2 in _cands:
                         with st.expander(
-                            f"[{_c2.temp_child_id}]  {_c2.time_start:.1f}s – {_c2.time_end:.1f}s",
+                            f"[{_c2.temp_child_id}]  "
+                            f"{_c2.time_start:.1f}s – {_c2.time_end:.1f}s  "
+                            f"| 신뢰도 {_c2.confidence:.2f}",
                             expanded=True,
                         ):
-                            _show_candidate_card(_c2)
+                            _show_candidate_with_mappings(_c2, repo.list_mappings(_c2.id))
                 except Exception as _e:
                     st.error(f"API 분析 실패: {_e}")
 
@@ -416,10 +418,10 @@ else:
                         _fallback = _info.get("fallback_reason")
 
                     if _new_cands:
-                        _mappings_count = map_candidates_for_video(_ai_vid, repo)
+                        _mappings = map_candidates_for_video(_ai_vid, repo)
                         st.success(
                             f"관찰 후보 {len(_new_cands)}개 생성 ({_info_label}), "
-                            f"매핑={_mappings_count}건"
+                            f"누리/KICCE 매핑 {len(_mappings)}건"
                         )
                         if _fallback:
                             st.caption(f"폴백 사유: {_fallback}")
