@@ -17,6 +17,7 @@ from services.observation_service import (
     generate_observation_candidates_with_provider,
 )
 from services.mapping.mapping_service import map_candidates_for_video
+from services.security_service import delete_video_and_related_data
 from services.video_service import save_uploaded_video
 from services.video_preprocess_service import preprocess_video, select_scenes_for_analysis
 from services.clip_service import select_evidence_clips, extract_clips
@@ -353,6 +354,50 @@ if _role == "teacher":
             "교사는 매일 개별 후보를 검토하지 않습니다. "
             "‘수집 균형’에서 현황을 확인하고 1~2주 주기로 ‘주간 관찰초안’에서 확정하세요."
         )
+
+        # ── 영상 삭제 (연구 종료 후 데이터 정리용) ──────────────────────────
+        if _my_videos:
+            st.divider()
+            with st.expander("🗑️ 영상 삭제 (연구 종료 후 데이터 정리용)", expanded=False):
+                st.warning(
+                    "삭제하면 원본 영상과 모든 파생 데이터(프레임·관찰 후보·확정 기록 등)가 **영구 삭제**됩니다. "
+                    "audit_log(접근·분석·삭제 이력)는 보존됩니다.",
+                    icon="⚠️",
+                )
+                _del_options = {f"{v.filename}  [{v.id}]": v.id for v in _my_videos}
+                _del_label = st.selectbox(
+                    "삭제할 영상을 선택하세요",
+                    options=list(_del_options.keys()),
+                    key="del_video_select",
+                )
+                _del_video_id = _del_options[_del_label]
+                _del_confirmed = st.checkbox(
+                    "원본 영상과 모든 파생 프레임·관찰 후보·확정 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
+                    key="del_confirm_check",
+                )
+                if st.button(
+                    "연구용 원본 영상 및 파생 프레임 삭제",
+                    disabled=not _del_confirmed,
+                    key="del_execute_btn",
+                    type="primary",
+                ):
+                    try:
+                        _del_result = delete_video_and_related_data(
+                            _del_video_id, repo,
+                            actor=get_current_actor(),
+                            videos_dir=VIDEOS_DIR,
+                            frames_dir=FRAMES_DIR,
+                        )
+                        st.success(
+                            f"삭제 완료. 감사 로그(action=delete)에 기록되었습니다. "
+                            f"(영상 파일 삭제: {_del_result['file_deleted']}, "
+                            f"프레임 폴더 삭제: {_del_result['frames_dir_deleted']}, "
+                            f"DB 행 삭제: {_del_result['db_rows_deleted']}건)",
+                            icon="✅",
+                        )
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(f"삭제 실패: {e}")
 
 # ===========================================================================
 # 연구자 모드: 수동 전처리 + AI 분석 (실호출 동의 게이트 포함)

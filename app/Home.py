@@ -1,8 +1,7 @@
 import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 import streamlit as st
 
-from core.config import APP_CAPTION, APP_TITLE, DB_PATH, DEFAULT_ACTOR, FRAMES_DIR, VIDEOS_DIR
-from services.security_service import delete_video_and_related_data
+from core.config import APP_CAPTION, APP_TITLE, DB_PATH
 from storage.sqlite_repository import SqliteRepository
 
 st.set_page_config(
@@ -32,6 +31,9 @@ def get_repo() -> SqliteRepository:
 repo = get_repo()
 render_user_sidebar()
 
+role = st.session_state.get("role", "teacher")
+actor = get_current_actor()
+
 # ---------------------------------------------------------------------------
 # 헤더
 # ---------------------------------------------------------------------------
@@ -42,140 +44,115 @@ st.caption(APP_CAPTION)
 st.divider()
 
 # ---------------------------------------------------------------------------
-# 안내 배너
+# 연구 안내 — 이 시스템이 무엇을 위한 것인지 명확히 (신규 교사 대상)
 # ---------------------------------------------------------------------------
 
-st.warning(
-    "본 시스템은 스마트안경 교사 시점 영상에서 유아 행동 관찰 후보를 추출하는 **연구용 시연 시스템**입니다.",
+st.info(
+    "본 시스템은 **연구용(현장 검증) 시스템**입니다. 스마트안경으로 촬영한 교사 시점 영상을 "
+    "분석해 유아 관찰기록 **초안(후보)**을 만들고, **AI가 교사의 관찰기록 작성을 얼마나 지원하는지를 "
+    "검증**하는 연구에 사용됩니다.",
     icon="🔬",
 )
-st.info(
-    "AI 결과는 관찰기록 확정값이 아니라 **교사 검토 전 후보**입니다. 최종 관찰기록은 교사가 검토·수정·확정합니다.",
-    icon="👩‍🏫",
-)
-st.info(
-    "원본 영상 접근과 분석은 **감사 로그에 기록**됩니다.",
-    icon="🔒",
-)
 
-st.divider()
-
-# ---------------------------------------------------------------------------
-# 영상 목록
-# ---------------------------------------------------------------------------
-
-st.subheader("등록된 영상 목록")
-
-role = st.session_state.get("role", "teacher")
-owner_filter = get_current_actor() if role == "teacher" else None
-videos = repo.list_videos(owner=owner_filter)
-
-if not videos:
-    st.info(
-        "아직 등록된 영상이 없습니다. "
-        "다음 단계에서 영상 업로드 기능을 구현합니다.",
-        icon="📭",
+with st.expander("ℹ️ 이 연구는 무엇인가요? (처음이시면 펼쳐 읽어주세요)", expanded=True):
+    st.markdown(
+        "**연구 배경**  \n"
+        "어린이집 교사는 일과 중 다수 유아를 동시에 돌보며 관찰과 기록을 병행해야 해 부담이 큽니다. "
+        "본 연구는 교사가 착용한 스마트안경 영상을 **매일 자동 분석**해 관찰기록 초안을 누적하고, "
+        "**1~2주 주기로 검토·확정**하는 현장 검증형 워크플로를 제안·검증합니다.\n\n"
+        "**연구 목적**  \n"
+        "AI가 제시한 후보와 교사가 최종 확정한 기록을 비교해 **AI의 기록 작성 지원도**를 측정합니다. "
+        "이 연구는 **유아의 발달·능력을 평가하거나 점수화하는 연구가 아닙니다.**\n\n"
+        "**교사가 하는 일**  \n"
+        "① 우리반·유아(가명) 등록 → ② 매일 영상 업로드(올리면 자동 분석) → "
+        "③ 수집 현황 확인 → ④ 1~2주마다 관찰초안 검토·확정.\n\n"
+        "**개인정보 보호**  \n"
+        "- 유아는 **가명 ID**로만 등록합니다(**실명은 저장하지 않습니다**).\n"
+        "- 얼굴 매칭은 **기본 OFF**이며, **연구 동의가 있을 때만** 사용합니다. 철회 시 즉시 삭제됩니다.\n"
+        "- 원본 영상·얼굴 참조사진·임베딩은 **외부로 전송하지 않습니다.**\n"
+        "- 영상·얼굴 데이터의 접근·삭제는 모두 **감사 로그에 기록**됩니다.\n\n"
+        "**AI의 한계**  \n"
+        "AI는 관찰기록을 **확정하지 않고 후보·초안만** 제시합니다. 최종 확정은 **교사**가 하며, "
+        "**점수·발달·평정은 산출하지 않습니다.**"
     )
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 다음 할 일 — 상태 기반 동적 안내
+# ---------------------------------------------------------------------------
+
+st.subheader("⏱ 다음 할 일")
+
+if role == "researcher":
+    st.info(
+        "연구자 계정입니다. 누리 영역 분포·KICCE 문항 커버리지·AI 지원도 지표는 "
+        "**연구자 리포트**에서 확인하세요.",
+        icon="📈",
+    )
+    st.page_link("pages/4_연구자_리포트.py", label="▶ 4. 연구자 리포트로 가기", icon="📈")
 else:
-    STATUS_LABEL = {
-        "uploaded":  "업로드됨",
-        "analyzing": "분석 중",
-        "analyzed":  "분석 완료",
-        "reviewed":  "검토 완료",
-    }
+    classes = repo.list_classes(teacher_owner=actor)
+    child_count = sum(len(repo.list_children(c.id)) for c in classes)
+    videos = repo.list_videos(owner=actor)
 
-    rows = []
-    for v in videos:
-        rows.append({
-            "영상 ID": v.id,
-            "파일명": v.filename,
-            "상태": STATUS_LABEL.get(v.status, v.status),
-            "등록일시": v.created_at.strftime("%Y-%m-%d %H:%M") if v.created_at else "-",
-            "보관 기한": v.retention_until.strftime("%Y-%m-%d") if v.retention_until else "미설정",
-        })
-
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-    st.caption(f"총 {len(videos)}개 영상")
-
-    st.divider()
-
-    # ── 영상 삭제 (연구 종료 후 데이터 정리용) ──────────────────────────
-    with st.expander("🗑️ 영상 삭제 (연구 종료 후 데이터 정리용)", expanded=False):
+    if not classes:
         st.warning(
-            "삭제하면 원본 영상과 모든 파생 데이터(프레임·관찰 후보·확정 기록 등)가 **영구 삭제**됩니다. "
-            "audit_log(접근·분석·삭제 이력)는 보존됩니다.",
-            icon="⚠️",
+            "아직 **우리반이 없어요.** 먼저 우리반과 유아(가명)를 등록하면 시작할 수 있습니다.",
+            icon="🏫",
         )
-        del_options = {f"{v.filename}  [{v.id}]": v.id for v in videos}
-        del_label = st.selectbox(
-            "삭제할 영상을 선택하세요",
-            options=list(del_options.keys()),
-            key="del_video_select",
+        st.page_link("pages/0_우리반_설정.py", label="▶ 0. 우리반 설정으로 가기", icon="🏫")
+    elif child_count == 0:
+        st.warning(
+            "우리반은 만들었어요. 이제 **유아(가명)를 등록**하세요. 실명이 아닌 가명으로 등록합니다.",
+            icon="🧒",
         )
-        del_video_id = del_options[del_label]
-        confirmed = st.checkbox(
-            "원본 영상과 모든 파생 프레임·관찰 후보·확정 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
-            key="del_confirm_check",
+        st.page_link("pages/0_우리반_설정.py", label="▶ 0. 우리반 설정에서 유아 등록", icon="🏫")
+    elif not videos:
+        st.success(
+            "등록이 끝났습니다! 이제 **오늘 촬영한 스마트안경 영상을 올려보세요.** "
+            "올리면 **자동으로 분석**되어 관찰 후보가 누적됩니다.",
+            icon="🎥",
         )
-        if st.button(
-            "연구용 원본 영상 및 파생 프레임 삭제",
-            disabled=not confirmed,
-            key="del_execute_btn",
-            type="primary",
-        ):
-            try:
-                result = delete_video_and_related_data(
-                    del_video_id, repo,
-                    actor=DEFAULT_ACTOR,
-                    videos_dir=VIDEOS_DIR,
-                    frames_dir=FRAMES_DIR,
-                )
-                st.success(
-                    f"삭제 완료. 감사 로그(action=delete)에 기록되었습니다. "
-                    f"(영상 파일 삭제: {result['file_deleted']}, "
-                    f"프레임 폴더 삭제: {result['frames_dir_deleted']}, "
-                    f"DB 행 삭제: {result['db_rows_deleted']}건)",
-                    icon="✅",
-                )
-                st.rerun()
-            except ValueError as e:
-                st.error(f"삭제 실패: {e}")
+        st.page_link("pages/1_일일_영상_기록.py", label="▶ 1. 일일 영상 기록으로 가기", icon="🎥")
+    else:
+        st.success(
+            "잘하고 계세요! **매일 개별 후보를 검토할 필요는 없습니다.** "
+            "수집 현황만 확인하고, **1~2주마다** 누적된 후보로 관찰초안을 확정하세요.",
+            icon="✅",
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.page_link("pages/2_수집_균형.py", label="▶ 2. 수집 균형 확인", icon="📊")
+        with col_b:
+            st.page_link("pages/3_주간_관찰초안.py", label="▶ 3. 주간 관찰초안 확정", icon="📝")
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# 개발 단계 카드
+# 우리반 운영 흐름 (4단계)
 # ---------------------------------------------------------------------------
 
-st.subheader("개발 진행 상태")
+st.subheader("우리반 운영 흐름")
+st.caption(
+    "교사는 매일 개별 후보를 검토하지 않습니다. **현황만 확인**하고 **주기적으로 확정**합니다."
+)
 
-col_cur, col_nxt = st.columns(2)
-with col_cur:
-    st.success("**완료 단계**: P0–P6 (홈·업로드·비전·매핑·교사검토·연구자리포트)", icon="✅")
-with col_nxt:
-    st.info("**현재 단계**: P7 보안·삭제·감사 로그 강화", icon="🔒")
-
-st.divider()
-
-# ---------------------------------------------------------------------------
-# 시연 흐름
-# ---------------------------------------------------------------------------
-
-st.subheader("시연 흐름")
-
-steps = [
-    ("1단계", "교사 시점 영상 업로드", "스마트안경으로 촬영한 교사 1인칭 영상을 업로드합니다."),
-    ("2단계", "장면 분할 및 프레임 추출", "영상을 장면 단위로 분할하고 대표 프레임을 추출합니다."),
-    ("3단계", "비전 모델 기반 관찰 후보 생성", "프레임을 비전 LLM으로 분석해 유아 행동·상호작용·맥락 관찰 후보를 생성합니다."),
-    ("4단계", "누리과정·KICCE 문항 후보 매핑", "관찰 후보를 누리과정 5영역으로 1차 분류하고, KICCE 유아관찰척도 문항 후보를 매핑합니다."),
-    ("5단계", "교사 검토·수정·확정", "교사가 child_A/B ↔ 가명 ID를 매칭하고, 후보를 채택·수정·기각하여 최종 관찰기록을 확정합니다."),
-    ("6단계", "연구자 리포트 확인", "누리 영역 분포, KICCE 문항 커버리지, AI 후보 대비 교사 확정 비교 지표를 확인합니다."),
+flow = [
+    ("① 🏫 우리반 설정",
+     "클래스와 유아(가명)를 등록합니다. 얼굴 매칭은 **동의할 때만**(기본 OFF) 사용합니다."),
+    ("② 🎥 일일 영상 기록",
+     "매일 스마트안경 영상을 업로드합니다. **올리면 자동 분석**되어 관찰 후보가 누적됩니다(개별 검토 불필요)."),
+    ("③ 📊 수집 균형",
+     "유아×누리영역 **수집 현황**을 확인하고, 부족한 영역을 다음 촬영에서 보완합니다."),
+    ("④ 📝 주간 관찰초안",
+     "1~2주마다 누적된 후보로 **초안을 생성**해 검토·수정 후 **확정**합니다."),
 ]
 
-cols = st.columns(3)
-for i, (step, title, desc) in enumerate(steps):
-    with cols[i % 3]:
-        st.info(f"**{step}: {title}**\n\n{desc}")
+flow_cols = st.columns(4)
+for col, (title, desc) in zip(flow_cols, flow):
+    with col:
+        st.info(f"**{title}**\n\n{desc}")
 
 st.divider()
 
@@ -186,10 +163,11 @@ st.divider()
 st.subheader("핵심 원칙")
 principles = [
     "AI 분석의 중심 데이터는 **영상**입니다. 오디오는 보조 증거로만 활용합니다.",
-    "AI는 관찰기록을 **확정하지 않고 후보만 제시**합니다. 교사가 최종 검토·수정·확정합니다.",
-    "AI는 유아를 자동 식별하지 않습니다. `child_A`, `child_B` 임시 ID를 부여하고 **교사가 가명 ID와 매칭**합니다.",
+    "AI는 관찰기록을 **확정하지 않고 후보·초안만 제시**합니다. 교사가 최종 검토·수정·확정합니다.",
+    "AI는 유아를 자동 식별하지 않습니다. `child_A`, `child_B` 임시 ID를 부여하고, "
+    "**동의 시 얼굴 참조 대비 가명 매칭 후보**까지만 제시합니다. **확정은 교사**가 합니다.",
     "**KICCE 유아관찰척도 59문항 매핑은 이 시스템의 핵심 기능**입니다(후보 제시, 확정 아님).",
-    "**관찰수준 점수는 산출하지 않습니다.**",
+    "**관찰수준·발달·평정 점수는 산출하지 않습니다.**",
 ]
 for p in principles:
     st.markdown(f"- {p}")
