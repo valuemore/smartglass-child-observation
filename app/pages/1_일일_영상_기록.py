@@ -201,11 +201,13 @@ def _run_auto_analysis_with_progress(video_id: str, label: str) -> dict:
     def _cb(pct: int, text: str) -> None:
         bar.progress(min(max(pct, 0), 100), text=f"{label}: {text}")
 
+    # mock이 아닌 provider를 명시적으로 설정한 경우 실호출 허용
+    allow_real = VISION_PROVIDER.lower() != "mock"
     result = run_auto_analysis(
         video_id, repo,
         frames_dir=FRAMES_DIR, clips_dir=CLIPS_DIR,
         actor=get_current_actor(), progress_cb=_cb,
-        allow_external_real=False,  # 자동 분석은 외부 실호출하지 않는다(안전장치)
+        allow_external_real=allow_real,
     )
     if result["status"] == "done":
         bar.progress(100, text=f"{label}: 완료")
