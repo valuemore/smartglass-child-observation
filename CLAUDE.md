@@ -27,7 +27,7 @@
 - 오디오(보조): faster-whisper
 - 얼굴(동의 기반): 로컬 얼굴 검출·임베딩(어댑터로 교체 가능). 임베딩은 **로컬 전용**.
 - 저장소: **SQLite** + JSON/CSV (repository 패턴으로 추상화). 원천 저장소는 SQLite(향후 PostgreSQL).
-- 배포: **로컬 앱 + 클라우드 AI API**
+- 배포: **서버 웹앱(Docker Compose + Nginx + HTTPS) + 클라우드 AI API**. 영상·얼굴사진·임베딩은 **서버 로컬**에만 보관, 외부 전송 금지.
 - 입력 흐름: **매일 영상 업로드 + 업로드 즉시 자동 분석·후보 누적**, **1~2주 주기 교사 확정**
 - **Neo4j 사용 금지.** 그래프 분석이 필요하면 SQLite에서 **재생성 가능한 인메모리 투영(NetworkX)**으로 한정한다. 향후 PostgreSQL/FastAPI/Next.js 확장을 위해 모듈을 분리한다.
 

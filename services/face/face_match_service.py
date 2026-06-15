@@ -33,21 +33,40 @@ def _default_embedder() -> FaceEmbedder:
 def ensure_child_embedding(
     repo: SqliteRepository, child: Child, embedder: FaceEmbedder,
 ) -> Optional[list[float]]:
-    """동의·참조사진이 있는 유아의 임베딩을 보장(없으면 계산·저장)하고 벡터를 반환한다.
+    """동의·정면사진이 있는 유아의 임베딩을 보장(없으면 계산·저장)하고 벡터를 반환한다.
 
-    동의가 없거나 참조사진이 없으면 None.
+    우측면·좌측면 사진이 있으면 각도별 임베딩의 **평균 벡터**를 저장한다.
+    다각도일수록 측면 장면에서도 강건하게 인식된다.
+    동의가 없거나 정면사진이 없으면 None.
     """
     if not child.face_match_consent or not child.reference_photo_path:
         return None
     existing = decode_embedding(child.face_embedding)
     if existing is not None:
         return existing
-    path = Path(child.reference_photo_path)
-    if not path.exists():
+
+    # 다각도: 사용 가능한 각도별 임베딩 수집
+    vecs: list[list[float]] = []
+    for path_str in [
+        child.reference_photo_path,   # 정면 (필수)
+        child.photo_right_path,       # 우측면 (있으면 추가)
+        child.photo_left_path,        # 좌측면 (있으면 추가)
+    ]:
+        if not path_str:
+            continue
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        vecs.append(embedder.embed(p.read_bytes()))
+
+    if not vecs:
         return None
-    vec = embedder.embed(path.read_bytes())
-    repo.set_child_embedding(child.id, encode_embedding(vec))
-    return vec
+
+    # 평균 임베딩 — 다각도일수록 더 강건한 대표 벡터
+    dim = len(vecs[0])
+    averaged = [sum(v[j] for v in vecs) / len(vecs) for j in range(dim)]
+    repo.set_child_embedding(child.id, encode_embedding(averaged))
+    return averaged
 
 
 def propose_matches(

@@ -378,19 +378,33 @@ class Child(BaseModel):
     pseudonym_id: str = Field(description="교사가 부여한 가명 ID. 실명 아님.")
     display_label: str = Field(default="", description="화면 표시 라벨(가명 기반)")
     reference_photo_path: Optional[str] = Field(
-        default=None, description="data/faces/... (제한 접근, 동의 시에만 저장)")
+        default=None, description="정면 사진 경로 data/faces/... (제한 접근, 동의 시에만 저장)")
     face_embedding: Optional[bytes] = Field(
-        default=None, description="얼굴 임베딩 벡터 (로컬 전용, 동의 시에만 저장). 외부 전송 금지.")
+        default=None, description="다각도 평균 임베딩 벡터 (로컬 전용, 동의 시에만 저장). 외부 전송 금지.")
     face_match_consent: bool = Field(default=False, description="얼굴매칭 동의 여부. 기본 False.")
     consent_at: Optional[datetime] = None
     consent_by: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
+    # 프로필 확장 필드 (개인정보: 실명 아닌 표시라벨, 실명과 결합 금지)
+    birth_date: Optional[str] = Field(default=None, description="생년월일 YYYY-MM-DD. 만 나이 표시용.")
+    gender: Optional[Literal["male", "female"]] = Field(default=None, description="성별 표시용.")
+    notes: str = Field(default="", description="특이사항 자유 텍스트 (알레르기·복용약 등). 구조화 의료 필드 금지.")
+    photo_right_path: Optional[str] = Field(
+        default=None, description="우측면 사진 경로. 다각도 임베딩 평균에 기여. 동의 시에만 저장.")
+    photo_left_path: Optional[str] = Field(
+        default=None, description="좌측면 사진 경로. 다각도 임베딩 평균에 기여. 동의 시에만 저장.")
 
     @model_validator(mode="after")
     def _consent_gate(self) -> "Child":
-        # 동의가 없으면 참조사진·임베딩을 보유할 수 없다(보안 불변식).
-        if not self.face_match_consent and (self.reference_photo_path or self.face_embedding):
-            raise ValueError("face_match_consent=False 인 유아는 reference_photo_path/face_embedding 을 가질 수 없습니다.")
+        # 동의가 없으면 참조사진(정면·우측·좌측)·임베딩을 보유할 수 없다(보안 불변식).
+        if not self.face_match_consent and (
+            self.reference_photo_path or self.face_embedding
+            or self.photo_right_path or self.photo_left_path
+        ):
+            raise ValueError(
+                "face_match_consent=False 인 유아는 reference_photo_path/face_embedding/"
+                "photo_right_path/photo_left_path 를 가질 수 없습니다."
+            )
         return self
 
 

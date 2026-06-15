@@ -1,34 +1,28 @@
 version: "3.9"
 
 services:
-  streamlit:
+  app:
     build: .
-    container_name: smartglass-app
-    ports:
-      - "8501:8501"
+    env_file: .env
     volumes:
-      - ./data:/app/data          # 영상·프레임·DB 영속화 (git 제외 경로)
-    env_file:
-      - .env
+      - ./data:/app/data          # 영상·프레임·DB·얼굴사진 — 서버 로컬 보존
+    expose:
+      - "8501"
     restart: unless-stopped
-    networks:
-      - smartglass-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
 
   nginx:
-    image: nginx:1.25-alpine
-    container_name: smartglass-nginx
+    image: nginx:alpine
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - /etc/letsencrypt:/etc/letsencrypt:ro   # certbot 인증서 (서버에서 발급)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
-      - streamlit
+      - app
     restart: unless-stopped
-    networks:
-      - smartglass-net
-
-networks:
-  smartglass-net:
-    driver: bridge

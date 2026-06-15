@@ -85,7 +85,12 @@ class SqliteRepository:
             face_match_consent   INTEGER NOT NULL DEFAULT 0,
             consent_at           TEXT,
             consent_by           TEXT,
-            created_at           TEXT NOT NULL
+            created_at           TEXT NOT NULL,
+            birth_date           TEXT,
+            gender               TEXT,
+            notes                TEXT NOT NULL DEFAULT '',
+            photo_right_path     TEXT,
+            photo_left_path      TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_child_class ON child(class_id);
 
@@ -302,6 +307,14 @@ class SqliteRepository:
                 "weekly_draft_id": "TEXT",
                 "period_start":    "TEXT",
                 "period_end":      "TEXT",
+            })
+            # V3 — child 프로필 확장 (생년월일·성별·특이사항·우측면·좌측면 사진)
+            self._ensure_columns(conn, "child", {
+                "birth_date":        "TEXT",
+                "gender":            "TEXT",
+                "notes":             "TEXT NOT NULL DEFAULT ''",
+                "photo_right_path":  "TEXT",
+                "photo_left_path":   "TEXT",
             })
             # 신규 컬럼(class_id 등) 보강 후에 인덱스를 생성한다(구버전 video 호환).
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_class ON video(class_id)")
@@ -742,8 +755,9 @@ class SqliteRepository:
         sql = """
         INSERT OR REPLACE INTO child
             (id, class_id, pseudonym_id, display_label, reference_photo_path,
-             face_embedding, face_match_consent, consent_at, consent_by, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             face_embedding, face_match_consent, consent_at, consent_by, created_at,
+             birth_date, gender, notes, photo_right_path, photo_left_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         with self._connect() as conn:
             conn.execute(sql, (
@@ -752,6 +766,8 @@ class SqliteRepository:
                 int(child.face_match_consent),
                 _dt_to_str(child.consent_at), child.consent_by,
                 _dt_to_str(child.created_at),
+                child.birth_date, child.gender, child.notes,
+                child.photo_right_path, child.photo_left_path,
             ))
 
     def get_child(self, child_id: str) -> Optional[Child]:
@@ -768,6 +784,35 @@ class SqliteRepository:
                 (class_id,),
             ).fetchall()
         return [_row_to_child(r) for r in rows]
+
+    def update_child_meta(
+        self,
+        child_id: str,
+        display_label: str,
+        birth_date: Optional[str],
+        gender: Optional[str],
+        notes: str,
+    ) -> None:
+        """display_label, birth_date, gender, notes를 갱신한다. 사진·동의는 별도 메서드."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE child SET display_label = ?, birth_date = ?, gender = ?, notes = ? WHERE id = ?",
+                (display_label, birth_date, gender, notes, child_id),
+            )
+
+    def update_child_photos(
+        self,
+        child_id: str,
+        photo_right_path: Optional[str],
+        photo_left_path: Optional[str],
+    ) -> None:
+        """우측면·좌측면 사진 경로를 갱신하고 임베딩을 무효화한다(다각도 평균 재계산 유도)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE child SET photo_right_path = ?, photo_left_path = ?, "
+                "face_embedding = NULL WHERE id = ? AND face_match_consent = 1",
+                (photo_right_path, photo_left_path, child_id),
+            )
 
     def set_face_consent(
         self, child_id: str, consent: bool, by: Optional[str] = None,
@@ -787,7 +832,8 @@ class SqliteRepository:
                 # 동의 철회: 임베딩·참조사진 경로를 즉시 비운다(보안 불변식).
                 conn.execute(
                     "UPDATE child SET face_match_consent = 0, reference_photo_path = NULL, "
-                    "face_embedding = NULL, consent_at = ?, consent_by = ? WHERE id = ?",
+                    "face_embedding = NULL, photo_right_path = NULL, photo_left_path = NULL, "
+                    "consent_at = ?, consent_by = ? WHERE id = ?",
                     (_dt_to_str(consent_at or datetime.now()), by, child_id),
                 )
 
@@ -1011,6 +1057,7 @@ def _row_to_class(r: sqlite3.Row) -> ClassGroup:
 
 
 def _row_to_child(r: sqlite3.Row) -> Child:
+    keys = set(r.keys())
     return Child(
         id=r["id"], class_id=r["class_id"], pseudonym_id=r["pseudonym_id"],
         display_label=r["display_label"] or "",
@@ -1020,6 +1067,11 @@ def _row_to_child(r: sqlite3.Row) -> Child:
         consent_at=_str_to_dt(r["consent_at"]),
         consent_by=r["consent_by"],
         created_at=_str_to_dt(r["created_at"]),
+        birth_date=r["birth_date"] if "birth_date" in keys else None,
+        gender=r["gender"] if "gender" in keys else None,
+        notes=r["notes"] if "notes" in keys else "",
+        photo_right_path=r["photo_right_path"] if "photo_right_path" in keys else None,
+        photo_left_path=r["photo_left_path"] if "photo_left_path" in keys else None,
     )
 
 

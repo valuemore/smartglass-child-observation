@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # data/ 는 볼륨으로 마운트하므로 빈 디렉토리만 생성
-RUN mkdir -p data/videos data/frames data/exports
+RUN mkdir -p data/videos data/frames data/exports data/faces
 
 EXPOSE 8501
 

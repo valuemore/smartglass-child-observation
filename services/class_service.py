@@ -60,11 +60,16 @@ def register_child(
     pseudonym_id: str,
     display_label: str = "",
     reference_photo: Optional[bytes] = None,
+    photo_right: Optional[bytes] = None,      # 우측면 사진 바이트 (신규)
+    photo_left: Optional[bytes] = None,       # 좌측면 사진 바이트 (신규)
     photo_ext: str = "jpg",
     consent: bool = False,
     consent_by: Optional[str] = None,
     faces_dir: str = FACES_DIR,
     actor: str = DEFAULT_ACTOR,
+    birth_date: Optional[str] = None,         # 신규
+    gender: Optional[str] = None,             # 신규
+    notes: str = "",                          # 신규
 ) -> Child:
     """유아를 가명 ID로 등록한다. 실명은 받지 않는다.
 
@@ -91,6 +96,26 @@ def register_child(
         reference_photo_path = str(dest_dir / f"{child_id}.{ext}")
         Path(reference_photo_path).write_bytes(reference_photo)
 
+    photo_right_path: Optional[str] = None
+    if photo_right is not None and consent:
+        ext_r = (photo_ext or "jpg").lower().lstrip(".")
+        if ext_r not in _ALLOWED_PHOTO_EXT:
+            ext_r = "jpg"
+        dest_dir = Path(faces_dir) / class_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        photo_right_path = str(dest_dir / f"{child_id}_right.{ext_r}")
+        Path(photo_right_path).write_bytes(photo_right)
+
+    photo_left_path: Optional[str] = None
+    if photo_left is not None and consent:
+        ext_l = (photo_ext or "jpg").lower().lstrip(".")
+        if ext_l not in _ALLOWED_PHOTO_EXT:
+            ext_l = "jpg"
+        dest_dir = Path(faces_dir) / class_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        photo_left_path = str(dest_dir / f"{child_id}_left.{ext_l}")
+        Path(photo_left_path).write_bytes(photo_left)
+
     child = Child(
         id=child_id,
         class_id=class_id,
@@ -102,6 +127,11 @@ def register_child(
         consent_at=now if consent else None,
         consent_by=consent_by if consent else None,
         created_at=now,
+        birth_date=birth_date,
+        gender=gender,
+        notes=notes,
+        photo_right_path=photo_right_path,
+        photo_left_path=photo_left_path,
     )
     repo.add_child(child)
 
@@ -111,7 +141,9 @@ def register_child(
         actor=actor, action="access",
         detail=(
             f"child_register class={class_id} pseudonym={child.pseudonym_id} "
-            f"consent={consent} has_photo={reference_photo_path is not None}"
+            f"consent={consent} has_photo={reference_photo_path is not None} "
+            f"has_right_photo={photo_right_path is not None} "
+            f"has_left_photo={photo_left_path is not None}"
         ),
         created_at=now,
     ))
@@ -144,10 +176,11 @@ def set_child_face_consent(
     now = datetime.now()
     if not consent:
         # 철회: 파일 먼저 삭제 → DB 비우기 순서(파일 누락 방지)
-        if child.reference_photo_path:
-            p = Path(child.reference_photo_path)
-            if p.exists() and "faces" in p.parts:
-                p.unlink(missing_ok=True)
+        for path_str in [child.reference_photo_path, child.photo_right_path, child.photo_left_path]:
+            if path_str:
+                p = Path(path_str)
+                if p.exists() and "faces" in p.parts:
+                    p.unlink(missing_ok=True)
         repo.set_face_consent(child_id, consent=False, by=by, consent_at=now)
         detail = "consent_revoked reference_photo_and_embedding_deleted"
     else:
@@ -179,12 +212,90 @@ def delete_child(
         video_id=child_id, actor=actor, action="delete",
         detail=f"child_delete pseudonym={child.pseudonym_id}", created_at=now,
     ))
-    if child.reference_photo_path:
-        p = Path(child.reference_photo_path)
-        if p.exists() and "faces" in p.parts:
-            p.unlink(missing_ok=True)
+    for path_str in [child.reference_photo_path, child.photo_right_path, child.photo_left_path]:
+        if path_str:
+            p = Path(path_str)
+            if p.exists() and "faces" in p.parts:
+                p.unlink(missing_ok=True)
     return repo.delete_child_cascade(child_id)
 
 
 def list_children(repo: SqliteRepository, class_id: str) -> list[Child]:
     return repo.list_children(class_id)
+
+
+def update_child_meta(
+    repo: SqliteRepository,
+    child_id: str,
+    display_label: str,
+    birth_date: Optional[str],
+    gender: Optional[str],
+    notes: str,
+    actor: str = DEFAULT_ACTOR,
+) -> Child:
+    """display_label, birth_date, gender, notes를 갱신한다."""
+    child = repo.get_child(child_id)
+    if child is None:
+        raise ValueError(f"child_id={child_id} 유아를 찾을 수 없습니다.")
+    now = datetime.now()
+    repo.update_child_meta(child_id, display_label.strip(), birth_date, gender, notes)
+    repo.write_audit(AuditLog(
+        id=f"audit_{child_id}_meta_{uuid.uuid4().hex[:6]}",
+        video_id=child_id, actor=actor, action="access",
+        detail=f"child_meta_update pseudonym={child.pseudonym_id}",
+        created_at=now,
+    ))
+    return repo.get_child(child_id)
+
+
+def update_child_photos(
+    repo: SqliteRepository,
+    child_id: str,
+    photo_right: Optional[bytes] = None,
+    photo_left: Optional[bytes] = None,
+    photo_ext: str = "jpg",
+    faces_dir: str = FACES_DIR,
+    actor: str = DEFAULT_ACTOR,
+) -> Child:
+    """우측면·좌측면 사진을 교체하고 다각도 임베딩을 무효화한다.
+
+    사진 변경 시 기존 평균 임베딩이 유효하지 않으므로 face_embedding=None으로 초기화.
+    다음 propose_matches() 호출 시 새 3각도 평균 임베딩이 재계산된다.
+    """
+    child = repo.get_child(child_id)
+    if child is None:
+        raise ValueError(f"child_id={child_id} 유아를 찾을 수 없습니다.")
+    if not child.face_match_consent:
+        raise ValueError("얼굴 매칭 동의 없이 사진을 저장할 수 없습니다.")
+
+    now = datetime.now()
+    ext = (photo_ext or "jpg").lower().lstrip(".")
+    if ext not in _ALLOWED_PHOTO_EXT:
+        ext = "jpg"
+    dest_dir = Path(faces_dir) / child.class_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    photo_right_path: Optional[str] = child.photo_right_path
+    if photo_right is not None:
+        photo_right_path = str(dest_dir / f"{child_id}_right.{ext}")
+        Path(photo_right_path).write_bytes(photo_right)
+
+    photo_left_path: Optional[str] = child.photo_left_path
+    if photo_left is not None:
+        photo_left_path = str(dest_dir / f"{child_id}_left.{ext}")
+        Path(photo_left_path).write_bytes(photo_left)
+
+    # 임베딩 무효화: 다음 propose_matches()에서 다각도 평균으로 재계산
+    repo.update_child_photos(child_id, photo_right_path, photo_left_path)
+
+    repo.write_audit(AuditLog(
+        id=f"audit_{child_id}_photos_{uuid.uuid4().hex[:6]}",
+        video_id=child_id, actor=actor, action="reference_photo_access",
+        detail=(
+            f"child_photos_update pseudonym={child.pseudonym_id} "
+            f"right={photo_right is not None} left={photo_left is not None} "
+            f"embedding_invalidated=True"
+        ),
+        created_at=now,
+    ))
+    return repo.get_child(child_id)
