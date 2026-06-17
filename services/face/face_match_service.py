@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import (
-    DEFAULT_ACTOR, FACE_MATCH_MIN_CONFIDENCE, FACE_MATCH_TOP_K,
+    DEFAULT_ACTOR, FACE_EMBED_PROVIDER, FACE_MATCH_FRAMES_PER_SCENE,
+    FACE_MATCH_MIN_CONFIDENCE, FACE_MATCH_TOP_K,
 )
 from core.schemas import AuditLog, Child, FaceMatchCandidate
 from services.face.base import (
@@ -26,6 +27,21 @@ from storage.sqlite_repository import SqliteRepository
 
 
 def _default_embedder() -> FaceEmbedder:
+    """FACE_EMBED_PROVIDER 설정에 따라 임베더를 선택한다.
+
+    - "opencv": 실제 로컬 얼굴 인식(YuNet+SFace). 로드 실패 시 mock으로 폴백.
+    - 그 외("mock"): 결정적 Mock(테스트·시연용).
+    """
+    provider = (FACE_EMBED_PROVIDER or "mock").lower()
+    if provider in ("opencv", "sface"):
+        try:
+            from services.face.opencv_embedder import get_opencv_embedder
+            return get_opencv_embedder()
+        except Exception:  # noqa: BLE001 — 모델 로드/다운로드 실패 시 mock 폴백
+            import logging
+            logging.getLogger(__name__).exception(
+                "OpenCV 얼굴 임베더 초기화 실패 — mock으로 폴백합니다."
+            )
     from services.face.mock_embedder import MockFaceEmbedder
     return MockFaceEmbedder()
 
@@ -45,7 +61,7 @@ def ensure_child_embedding(
     if existing is not None:
         return existing
 
-    # 다각도: 사용 가능한 각도별 임베딩 수집
+    # 다각도: 사용 가능한 각도별 임베딩 수집 (얼굴 미검출 → embed()==[]는 건너뜀)
     vecs: list[list[float]] = []
     for path_str in [
         child.reference_photo_path,   # 정면 (필수)
@@ -57,7 +73,9 @@ def ensure_child_embedding(
         p = Path(path_str)
         if not p.exists():
             continue
-        vecs.append(embedder.embed(p.read_bytes()))
+        emb = embedder.embed(p.read_bytes())
+        if emb:  # 얼굴 검출 성공한 사진만 사용
+            vecs.append(emb)
 
     if not vecs:
         return None
@@ -111,41 +129,55 @@ def propose_matches(
     if not child_vecs:
         return []
 
-    # 3) temp_child_id별 대표 프레임 임베딩 → 유아별 최고 유사도 집계
-    #    (한 temp_child_id 가 여러 장면에 등장 → 장면별 최고값을 취함)
+    # 3) temp_child_id별 표본 프레임 임베딩 → 유아별 최고 유사도 집계
+    #    (한 temp_child_id 가 여러 장면에 등장하고, 장면당 상위 N장을 스캔해 검출 실패를 완화)
     best: dict[str, dict[str, float]] = {}  # temp_child_id -> {child_id: best_sim}
     for cand in repo.list_candidates(video_id):
         temp = cand.temp_child_id
-        kept = [f for f in repo.list_frames(cand.scene_id) if f.kept]
-        if not kept:
-            continue
-        fpath = Path(kept[0].image_path)
-        if not fpath.exists():
-            continue
-        emb_v = embedder.embed(fpath.read_bytes())
-        slot = best.setdefault(temp, {})
-        for child_id, cvec in child_vecs.items():
-            sim = cosine_similarity(emb_v, cvec)
-            if sim > slot.get(child_id, 0.0):
-                slot[child_id] = sim
-
-    # 4) 후보 생성 (temp_child_id별 상위 top_k, 임계값 이상)
-    now = datetime.now()
-    results: list[FaceMatchCandidate] = []
-    for temp, sims in best.items():
-        ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
-        for child_id, sim in ranked[:top_k]:
-            if sim < min_confidence:
+        kept = [f for f in repo.list_frames(cand.scene_id) if f.kept][:FACE_MATCH_FRAMES_PER_SCENE]
+        for frm in kept:
+            fpath = Path(frm.image_path)
+            if not fpath.exists():
                 continue
-            results.append(FaceMatchCandidate(
-                id=f"fmc_{video_id}_{temp}_{child_id}_{uuid.uuid4().hex[:6]}",
-                video_id=video_id,
-                temp_child_id=temp,
-                child_id=child_id,
-                confidence=round(sim, 4),
-                status="proposed",
-                created_at=now,
-            ))
+            emb_v = embedder.embed(fpath.read_bytes())
+            if not emb_v:  # 얼굴 미검출 프레임은 건너뜀
+                continue
+            slot = best.setdefault(temp, {})
+            for child_id, cvec in child_vecs.items():
+                sim = cosine_similarity(emb_v, cvec)
+                if sim > slot.get(child_id, 0.0):
+                    slot[child_id] = sim
+
+    # 4) 후보 생성 — 영상 단위 1:1 그리디 배정.
+    #    프레임은 장면 단위라 한 장면의 모든 temp_child_id가 같은 얼굴을 공유한다.
+    #    독립적으로 best 유아를 뽑으면 모든 temp_id가 동일 유아로 쏠리므로,
+    #    유사도 내림차순으로 (각 유아·각 temp_id를 최대 1회) 그리디 배정해 서로 다른 후보를 만든다.
+    #    이는 AI '후보'이며 확정은 교사가 한다(임시 ID↔얼굴 위치 연결 정보가 없어 배정은 추정).
+    now = datetime.now()
+    pairs: list[tuple[float, str, str]] = []
+    for temp, sims in best.items():
+        for child_id, sim in sims.items():
+            if sim >= min_confidence:
+                pairs.append((sim, temp, child_id))
+    pairs.sort(key=lambda x: x[0], reverse=True)
+
+    used_temp: set[str] = set()
+    used_child: set[str] = set()
+    results: list[FaceMatchCandidate] = []
+    for sim, temp, child_id in pairs:
+        if temp in used_temp or child_id in used_child:
+            continue
+        used_temp.add(temp)
+        used_child.add(child_id)
+        results.append(FaceMatchCandidate(
+            id=f"fmc_{video_id}_{temp}_{child_id}_{uuid.uuid4().hex[:6]}",
+            video_id=video_id,
+            temp_child_id=temp,
+            child_id=child_id,
+            confidence=round(sim, 4),
+            status="proposed",
+            created_at=now,
+        ))
 
     # 5) 멱등 저장: 기존 proposed 삭제 후 재삽입
     repo.delete_face_match_candidates_for_video(video_id, only_proposed=True)

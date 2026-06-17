@@ -83,6 +83,7 @@ def collection_status(
     total_candidates = 0
     matched_candidates = 0
     unmatched_candidates = 0
+    no_area_candidates = 0  # 누리영역이 하나도 분류되지 않은 후보 수
 
     for v in videos:
         match_map = {m.temp_child_id: m.pseudonym_id for m in repo.list_child_matches(v.id)}
@@ -90,6 +91,8 @@ def collection_status(
         for cand in repo.list_candidates(v.id):
             total_candidates += 1
             areas = _candidate_areas(cand, repo.list_mappings(cand.id))
+            if not areas:
+                no_area_candidates += 1
             obs = observed_date or (cand.created_at.strftime("%Y-%m-%d") if cand.created_at else None)
 
             pseudonym = match_map.get(cand.temp_child_id)
@@ -169,4 +172,5 @@ def collection_status(
         "total_candidates": total_candidates,
         "matched_candidates": matched_candidates,
         "unmatched_candidates": unmatched_candidates,
+        "no_area_candidates": no_area_candidates,
     }

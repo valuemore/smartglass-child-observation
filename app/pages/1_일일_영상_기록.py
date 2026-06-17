@@ -207,6 +207,24 @@ _STATUS_BADGE = {
 st.subheader("영상 업로드")
 st.caption("여러 3분 클립을 한 번에 업로드할 수 있습니다(현장 검증 배치 업로드).")
 
+# 교사 업로드 영상이 누적될 클래스(우리반)를 결정한다.
+# 교사 클래스가 1개면 자동 연결, 여러 개면 가장 최근 클래스에 연결한다.
+_upload_class_id = None
+if _role == "teacher":
+    try:
+        _my_classes = repo.list_classes(teacher_owner=get_current_actor())
+    except Exception:
+        _my_classes = []
+    if _my_classes:
+        _target_class = _my_classes[-1]  # created_at 오름차순 → 가장 최근
+        _upload_class_id = _target_class.id
+        st.caption(f"📁 이 영상은 **‘{_target_class.name}’** 우리반에 누적됩니다.")
+    else:
+        st.caption(
+            "ℹ️ 등록된 우리반이 없어 미분류로 저장됩니다. "
+            "‘우리반 설정’에서 클래스를 만들면 유아별 수집 현황이 정확해집니다."
+        )
+
 uploaded_files = st.file_uploader(
     "스마트안경 녹화 영상을 선택하세요 (여러 클립 선택 가능)",
     type=["mp4", "mov", "m4v", "avi"],
@@ -227,6 +245,7 @@ if uploaded_files:
                 video = save_uploaded_video(
                     file_bytes=uf.read(), filename=uf.name,
                     repo=repo, videos_dir=VIDEOS_DIR, actor=get_current_actor(),
+                    class_id=_upload_class_id,
                 )
             st.session_state[state_key] = video
 

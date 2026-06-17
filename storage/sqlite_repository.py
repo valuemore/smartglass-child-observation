@@ -377,6 +377,14 @@ class SqliteRepository:
                     (status, progress, last_error, int(status == "done"), video_id),
                 )
 
+    def set_video_class(self, video_id: str, class_id: Optional[str]) -> None:
+        """영상의 소속 클래스(class_id)를 갱신한다(미분류 영상 백필용)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE video SET class_id = ? WHERE id = ?",
+                (class_id, video_id),
+            )
+
     def get_video(self, video_id: str) -> Optional[Video]:
         with self._connect() as conn:
             row = conn.execute(
@@ -735,6 +743,14 @@ class SqliteRepository:
                 "SELECT * FROM class_group WHERE id = ?", (class_id,)
             ).fetchone()
         return _row_to_class(row) if row else None
+
+    def set_face_match_enabled(self, class_id: str, enabled: bool) -> None:
+        """클래스의 얼굴매칭 활성화 여부를 갱신한다(연구 동의 기반 ON/OFF)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE class_group SET face_match_enabled = ? WHERE id = ?",
+                (int(enabled), class_id),
+            )
 
     def list_classes(self, teacher_owner: Optional[str] = None) -> list[ClassGroup]:
         if teacher_owner is not None:

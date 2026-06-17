@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from core.schemas import ChildMatch, FinalRecord, KicceItemCandidate
+from core.schemas import FinalRecord, KicceItemCandidate
 from services.draft_service import generate_weekly_draft
 from storage.sqlite_repository import SqliteRepository
 
@@ -18,6 +18,7 @@ st.set_page_config(
 
 from _auth import require_login, render_user_sidebar, get_current_actor
 from _responsive import inject_responsive_css
+from _matching import render_matching_section
 
 require_login()
 inject_responsive_css()
@@ -80,68 +81,16 @@ _child_by_pseudo = {c.pseudonym_id: c for c in _children}
 st.divider()
 
 # ===========================================================================
-# A. 유아 매칭 확정 (얼굴 매칭 후보 + 수동 매칭)
+# A. 유아 매칭 확정 (얼굴 매칭 후보 + 수동 매칭) — 공유 컴포넌트
 # ===========================================================================
 st.subheader("A. 유아 매칭 확정")
 st.caption("AI 얼굴 매칭은 후보입니다. 교사가 확정해야 유아(가명)에 연결되어 초안에 집계됩니다.")
 
-if not _period_videos:
-    st.info("이 기간에 업로드된 영상이 없습니다.")
-else:
-    _any_pending = False
-    for v in _period_videos:
-        matched = {m.temp_child_id for m in repo.list_child_matches(v.id)}
-        fmcs = [f for f in repo.list_face_match_candidates(v.id) if f.status == "proposed"]
-        temp_ids = sorted({c.temp_child_id for c in repo.list_candidates(v.id)})
-        unmatched_temps = [t for t in temp_ids if t not in matched]
-        if not unmatched_temps:
-            continue
-        _any_pending = True
-        with st.expander(f"🎬 {v.filename}  ({v.captured_date}) — 미매칭 {len(unmatched_temps)}명", expanded=True):
-            # 얼굴 매칭 후보
-            for f in fmcs:
-                if f.temp_child_id in matched:
-                    continue
-                ch = repo.get_child(f.child_id)
-                label = ch.display_label if ch else f.child_id
-                c1, c2, c3 = st.columns([3, 1, 1])
-                c1.markdown(f"**{f.temp_child_id}** → 제안: **{label}** (유사도 {f.confidence:.2f})")
-                if c2.button("확정", key=f"fmc_ok_{f.id}"):
-                    repo.decide_face_match(f.id, status="confirmed", decided_by=_actor)
-                    if ch:
-                        repo.set_child_match(ChildMatch(
-                            id=f"cm_{v.id}_{f.temp_child_id}_{uuid.uuid4().hex[:4]}",
-                            video_id=v.id, temp_child_id=f.temp_child_id,
-                            pseudonym_id=ch.pseudonym_id, source="face_candidate_confirmed",
-                            matched_by=_actor, matched_at=datetime.now(),
-                        ))
-                    st.rerun()
-                if c3.button("기각", key=f"fmc_no_{f.id}"):
-                    repo.decide_face_match(f.id, status="rejected", decided_by=_actor)
-                    st.rerun()
-
-            # 수동 매칭 (얼굴 후보 없거나 보완)
-            if _children:
-                st.markdown("**수동 매칭**")
-                for t in unmatched_temps:
-                    mc1, mc2 = st.columns([3, 1])
-                    pick = mc1.selectbox(
-                        f"{t} → 유아 선택",
-                        options=["(선택 안 함)"] + [f"{c.display_label} ({c.pseudonym_id})" for c in _children],
-                        key=f"manual_{v.id}_{t}",
-                    )
-                    if mc2.button("매칭", key=f"manual_ok_{v.id}_{t}") and pick != "(선택 안 함)":
-                        pseudo = pick.rsplit("(", 1)[-1].rstrip(")")
-                        repo.set_child_match(ChildMatch(
-                            id=f"cm_{v.id}_{t}_{uuid.uuid4().hex[:4]}",
-                            video_id=v.id, temp_child_id=t, pseudonym_id=pseudo,
-                            source="teacher", matched_by=_actor, matched_at=datetime.now(),
-                        ))
-                        st.rerun()
-            else:
-                st.caption("등록 유아가 없어 수동 매칭을 할 수 없습니다. ‘우리반 설정’에서 유아를 등록하세요.")
-    if not _any_pending:
-        st.success("이 기간의 모든 관찰 후보가 유아에 매칭되었습니다.", icon="✅")
+_any_pending = render_matching_section(
+    repo, _period_videos, _children, actor=_actor, key_prefix="draft",
+)
+if _period_videos and not _any_pending:
+    st.success("이 기간의 모든 관찰 후보가 유아에 매칭되었습니다.", icon="✅")
 
 st.divider()
 

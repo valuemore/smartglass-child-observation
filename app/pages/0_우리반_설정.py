@@ -143,7 +143,22 @@ def render_list() -> None:
     # 학급 헤더
     col_left, col_right = st.columns([3, 1])
     col_left.markdown(f"## {sel_class.name}")
-    col_right.caption("기본반" if not sel_class.face_match_enabled else "얼굴매칭 ON")
+    col_right.caption("얼굴매칭 ON" if sel_class.face_match_enabled else "얼굴매칭 OFF")
+
+    # 얼굴매칭 활성화 토글 (연구 동의 기반, 기본 OFF)
+    _fm_on = st.toggle(
+        "얼굴 매칭 사용 (연구 동의 기반)",
+        value=bool(sel_class.face_match_enabled),
+        key=f"fm_toggle_{selected_class_id}",
+        help=(
+            "켜면 등록된 유아 참조사진과 영상 속 얼굴을 로컬에서 비교해 가명 매칭 '후보'를 제시합니다. "
+            "임베딩·사진은 로컬에만 저장되며 외부로 전송되지 않습니다. 확정은 항상 교사가 합니다."
+        ),
+    )
+    if bool(_fm_on) != bool(sel_class.face_match_enabled):
+        repo.set_face_match_enabled(selected_class_id, _fm_on)
+        st.toast("얼굴 매칭을 " + ("켰습니다." if _fm_on else "껐습니다."))
+        st.rerun()
 
     # 유아 목록
     children = repo.list_children(selected_class_id)
