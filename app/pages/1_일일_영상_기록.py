@@ -1,7 +1,7 @@
 import _bootstrap  # noqa: F401  — 프로젝트 루트를 sys.path에 추가
 
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 
 import streamlit as st
 
@@ -64,9 +64,11 @@ elif not _external_real:
         icon="⚠️",
     )
 else:
-    st.error(
-        f"🌐 **비전 어댑터**: {_provider_display} — **실제 외부 API 호출 활성화** · 비용 발생 주의",
-        icon="🚨",
+    st.info(
+        f"🌐 **{_provider_display.capitalize()} AI 분석 활성화** — "
+        "영상을 업로드하면 자동으로 관찰 후보가 생성됩니다. "
+        "분석마다 소량의 API 비용이 발생합니다.",
+        icon="🌐",
     )
 
 
@@ -215,56 +217,9 @@ def _run_auto_analysis_with_progress(video_id: str, label: str) -> dict:
 
 
 # ===========================================================================
-# 섹션 0: 관찰 메타데이터 입력 (업로드 전 필수)
-# ===========================================================================
-OBSERVATION_CONTEXTS = ["자유놀이", "야외활동", "실내놀이", "급식", "이야기나누기", "기타"]
-
-st.subheader("관찰 메타데이터 입력")
-st.caption("영상 업로드 전에 기관·클래스·촬영일·관찰 상황을 입력해주세요.")
-
-with st.form("video_meta_form"):
-    _meta_institution = st.text_input("기관명", placeholder="예: 행복유치원", help="필수 항목")
-    _meta_class_name = st.text_input("클래스 이름", placeholder="예: 햇빛반", help="필수 항목")
-    _meta_captured = st.date_input("촬영일", value=date.today(), help="누적·주간 묶음 기준일")
-    _meta_obs_context = st.selectbox("관찰 상황", OBSERVATION_CONTEXTS)
-    _meta_notes = st.text_area(
-        "메모 (선택)",
-        placeholder="관찰과 관련된 추가 정보를 입력해주세요.",
-        max_chars=200,
-    )
-    _meta_submitted = st.form_submit_button("확인", use_container_width=True)
-
-if _meta_submitted:
-    if not _meta_institution.strip() or not _meta_class_name.strip():
-        st.error("기관명과 클래스 이름은 필수 항목입니다.")
-        st.stop()
-    st.session_state["video_meta_confirmed"] = {
-        "institution": _meta_institution.strip(),
-        "class_name": _meta_class_name.strip(),
-        "captured_date": _meta_captured.strftime("%Y-%m-%d"),
-        "observation_context": _meta_obs_context,
-        "notes": _meta_notes.strip(),
-    }
-
-if "video_meta_confirmed" not in st.session_state:
-    st.info("기관명과 클래스 이름을 입력하고 '확인' 버튼을 눌러야 영상 업로드를 진행할 수 있습니다.")
-    st.stop()
-
-_confirmed_meta = st.session_state["video_meta_confirmed"]
-st.success(
-    f"메타데이터 확인됨 — 기관: {_confirmed_meta['institution']} / "
-    f"클래스: {_confirmed_meta['class_name']} / "
-    f"촬영일: {_confirmed_meta.get('captured_date', '-')} / "
-    f"관찰 상황: {_confirmed_meta['observation_context']}"
-)
-
-st.divider()
-
-
-# ===========================================================================
 # 섹션 1: 영상 업로드 + 업로드 즉시 자동 분석
 # ===========================================================================
-st.subheader("1단계: 영상 업로드 (업로드 즉시 자동 분석)")
+st.subheader("영상 업로드")
 st.caption("여러 3분 클립을 한 번에 업로드할 수 있습니다(현장 검증 배치 업로드).")
 
 uploaded_files = st.file_uploader(
@@ -283,16 +238,10 @@ if uploaded_files:
             results.append({"파일명": uf.name, "상태": "↺ 기존 저장됨", "영상 ID": v.id})
             continue
         try:
-            meta = st.session_state.get("video_meta_confirmed", {})
             with st.spinner(f"업로드 중: {uf.name}"):
                 video = save_uploaded_video(
                     file_bytes=uf.read(), filename=uf.name,
                     repo=repo, videos_dir=VIDEOS_DIR, actor=get_current_actor(),
-                    institution=meta.get("institution", ""),
-                    class_name=meta.get("class_name", ""),
-                    observation_context=meta.get("observation_context", ""),
-                    notes=meta.get("notes", ""),
-                    captured_date=meta.get("captured_date"),
                 )
             st.session_state[state_key] = video
 
