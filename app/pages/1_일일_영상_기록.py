@@ -11,7 +11,6 @@ from core.config import (
     VISION_PROVIDER, VISION_DEFAULT_MAX_SCENES_TEACHER,
 )
 from core.schemas import AuditLog
-from services.auto_analysis_service import run_auto_analysis
 from services.observation_service import (
     generate_mock_observation_candidates,
     generate_observation_candidates_with_provider,
@@ -81,6 +80,12 @@ def get_repo() -> SqliteRepository:
     repo = SqliteRepository(DB_PATH)
     repo.init_schema()
     return repo
+
+
+@st.cache_resource
+def get_analysis_queue() -> "AnalysisQueue":
+    from services.analysis_queue import AnalysisQueue
+    return AnalysisQueue()
 
 
 repo = get_repo()
@@ -196,26 +201,6 @@ _STATUS_BADGE = {
 }
 
 
-def _run_auto_analysis_with_progress(video_id: str, label: str) -> dict:
-    """진행률 바를 표시하며 자동 분석을 실행한다(교사 흐름)."""
-    bar = st.progress(0, text=f"{label}: 준비 중...")
-
-    def _cb(pct: int, text: str) -> None:
-        bar.progress(min(max(pct, 0), 100), text=f"{label}: {text}")
-
-    # mock이 아닌 provider를 명시적으로 설정한 경우 실호출 허용
-    allow_real = VISION_PROVIDER.lower() != "mock"
-    result = run_auto_analysis(
-        video_id, repo,
-        frames_dir=FRAMES_DIR, clips_dir=CLIPS_DIR,
-        actor=get_current_actor(), progress_cb=_cb,
-        allow_external_real=allow_real,
-    )
-    if result["status"] == "done":
-        bar.progress(100, text=f"{label}: 완료")
-    return result
-
-
 # ===========================================================================
 # 섹션 1: 영상 업로드 + 업로드 즉시 자동 분석
 # ===========================================================================
@@ -245,19 +230,13 @@ if uploaded_files:
                 )
             st.session_state[state_key] = video
 
-            # 교사: 업로드 즉시 자동 분석. 연구자: 업로드만(수동 분석은 아래 섹션).
+            # 교사: 업로드 즉시 백그라운드 분석 대기열에 추가(논블로킹).
+            # 연구자: 업로드만(수동 분석은 아래 섹션).
             if _role == "teacher":
-                res = _run_auto_analysis_with_progress(video.id, uf.name)
-                if res["status"] == "done":
-                    note = (
-                        "외부 실호출 동의 필요(후보 보류)" if res["vision_skipped"]
-                        else f"관찰 후보 {res['candidates']}개"
-                    )
-                    results.append({"파일명": uf.name, "상태": f"✅ 자동 분석 완료 · {note}",
-                                    "영상 ID": video.id})
-                else:
-                    results.append({"파일명": uf.name, "상태": f"❌ 분석 실패: {res['error']}",
-                                    "영상 ID": video.id})
+                repo.update_analysis_status(video.id, "queued", 0, None)
+                get_analysis_queue().submit(video.id, get_current_actor())
+                results.append({"파일명": uf.name, "상태": "⏳ 분석 대기열에 추가됨",
+                                "영상 ID": video.id})
             else:
                 results.append({"파일명": uf.name, "상태": "✅ 업로드됨(연구자: 수동 분석)",
                                 "영상 ID": video.id})
@@ -316,11 +295,8 @@ if _role == "teacher":
             if v.analysis_status == "failed":
                 st.caption(f"⚠️ 실패 사유: {v.last_error or '알 수 없음'} (재시도 {v.retry_count}회)")
                 if st.button("🔁 재시도", key=f"retry_{v.id}"):
-                    res = _run_auto_analysis_with_progress(v.id, v.filename)
-                    if res["status"] == "done":
-                        st.success(f"재시도 성공 — 관찰 후보 {res['candidates']}개")
-                    else:
-                        st.error(f"재시도 실패: {res['error']}")
+                    repo.update_analysis_status(v.id, "queued", 0, None)
+                    get_analysis_queue().submit(v.id, get_current_actor())
                     st.rerun()
             st.divider()
         st.caption(

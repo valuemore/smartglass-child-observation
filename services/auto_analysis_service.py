@@ -87,13 +87,6 @@ def run_auto_analysis(
         result["clips"] = len(clips)
         _emit("running", 60, f"근거 클립 {len(clips)}개")
 
-        # 비전 단계 진입 전 클립 유효성 확인
-        _valid_clips = [c for c in clips if c.local_clip_path and Path(c.local_clip_path).exists()]
-        if not _valid_clips and clips:
-            raise ValueError("클립 파일이 디스크에 존재하지 않습니다. 재시도 버튼을 눌러 재분석하세요.")
-        if not _valid_clips and not clips:
-            raise ValueError("클립 추출에 실패했습니다. ffmpeg 설치 여부와 영상 파일을 확인하세요.")
-
         # 3) 비전 관찰 후보. 외부 실호출은 안전장치로 차단(기본).
         prov = (cfg.VISION_PROVIDER or "").lower()
         will_call_external_real = (prov != "mock") and (not cfg.VISION_DRY_RUN)
@@ -101,6 +94,15 @@ def run_auto_analysis(
             result["vision_skipped"] = True
             _emit("running", 90, "비전 후보 생성 보류 (외부 실호출 동의 필요)")
         else:
+            # 외부 provider(gemini/external)는 근거 클립이 필수다. mock은 클립 불필요.
+            if prov != "mock":
+                _valid_clips = [
+                    c for c in clips if c.local_clip_path and Path(c.local_clip_path).exists()
+                ]
+                if not _valid_clips:
+                    if clips:
+                        raise ValueError("클립 파일이 디스크에 존재하지 않습니다. 재시도 버튼을 눌러 재분석하세요.")
+                    raise ValueError("클립 추출에 실패했습니다. ffmpeg 설치 여부와 영상 파일을 확인하세요.")
             _emit("running", 70, "AI 관찰 후보 생성 중...")
             candidates, _info = generate_observation_candidates_with_provider(
                 video_id=video_id, repo=repo, actor=actor, max_scenes=max_scenes,
