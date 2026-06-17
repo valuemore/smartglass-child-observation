@@ -92,5 +92,8 @@ test_video.*
 sample_video.*
 debug/
 
+# === 서버 배포용 wheel 캐시 (로컬 빌드 전용, git 제외) ===
+server_wheels/
+
 # === Claude Code 로컬 설정 (권한 등 개인 설정) ===
 .claude/settings.local.json
