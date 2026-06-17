@@ -25,6 +25,30 @@ from storage.sqlite_repository import SqliteRepository
 _ALLOWED_PHOTO_EXT = {"jpg", "jpeg", "png", "webp"}
 
 
+def _auto_rotate_photo(img_bytes: bytes) -> bytes:
+    """EXIF orientation을 적용해 사진을 올바른 방향으로 저장한다.
+
+    스마트폰 사진은 회전 정보를 EXIF에만 기록하고 픽셀은 눕혀서 저장하는 경우가 많다.
+    PIL ImageOps.exif_transpose()로 픽셀을 실제 방향으로 회전한 뒤 반환한다.
+    """
+    try:
+        import io
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        buf = io.BytesIO()
+        save_fmt = (img.format or "JPEG").upper()
+        if save_fmt not in ("JPEG", "PNG", "WEBP"):
+            save_fmt = "JPEG"
+        if save_fmt == "JPEG":
+            img.save(buf, format=save_fmt, quality=90, exif=b"")
+        else:
+            img.save(buf, format=save_fmt)
+        return buf.getvalue()
+    except Exception:
+        return img_bytes
+
+
 def register_class(
     repo: SqliteRepository,
     name: str,
@@ -94,7 +118,7 @@ def register_child(
         dest_dir = Path(faces_dir) / class_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         reference_photo_path = str(dest_dir / f"{child_id}.{ext}")
-        Path(reference_photo_path).write_bytes(reference_photo)
+        Path(reference_photo_path).write_bytes(_auto_rotate_photo(reference_photo))
 
     photo_right_path: Optional[str] = None
     if photo_right is not None and consent:
@@ -104,7 +128,7 @@ def register_child(
         dest_dir = Path(faces_dir) / class_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         photo_right_path = str(dest_dir / f"{child_id}_right.{ext_r}")
-        Path(photo_right_path).write_bytes(photo_right)
+        Path(photo_right_path).write_bytes(_auto_rotate_photo(photo_right))
 
     photo_left_path: Optional[str] = None
     if photo_left is not None and consent:
@@ -114,7 +138,7 @@ def register_child(
         dest_dir = Path(faces_dir) / class_id
         dest_dir.mkdir(parents=True, exist_ok=True)
         photo_left_path = str(dest_dir / f"{child_id}_left.{ext_l}")
-        Path(photo_left_path).write_bytes(photo_left)
+        Path(photo_left_path).write_bytes(_auto_rotate_photo(photo_left))
 
     child = Child(
         id=child_id,
@@ -278,12 +302,12 @@ def update_child_photos(
     photo_right_path: Optional[str] = child.photo_right_path
     if photo_right is not None:
         photo_right_path = str(dest_dir / f"{child_id}_right.{ext}")
-        Path(photo_right_path).write_bytes(photo_right)
+        Path(photo_right_path).write_bytes(_auto_rotate_photo(photo_right))
 
     photo_left_path: Optional[str] = child.photo_left_path
     if photo_left is not None:
         photo_left_path = str(dest_dir / f"{child_id}_left.{ext}")
-        Path(photo_left_path).write_bytes(photo_left)
+        Path(photo_left_path).write_bytes(_auto_rotate_photo(photo_left))
 
     # 임베딩 무효화: 다음 propose_matches()에서 다각도 평균으로 재계산
     repo.update_child_photos(child_id, photo_right_path, photo_left_path)

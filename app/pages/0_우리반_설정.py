@@ -425,48 +425,67 @@ def render_profile() -> None:
     class_name = sel_class.name if sel_class else ch.class_id
 
     # 상단 버튼 행
-    col_back, col_edit, col_del = st.columns([4, 1, 1])
+    col_back, col_spacer, col_edit = st.columns([3, 4, 1])
     with col_back:
         if st.button("← 우리반", key="profile_back"):
             _go("list")
     with col_edit:
         if st.button("수정", key="profile_edit"):
             _go("edit_child")
-    with col_del:
-        # 삭제는 하단 expander로 안내
-        st.markdown("")
 
-    # 사진 3장 행
     st.markdown("---")
-    ph_cols = st.columns(3)
-    photos = [
-        ("정면", ch.reference_photo_path),
-        ("우측면", ch.photo_right_path),
-        ("좌측면", ch.photo_left_path),
-    ]
-    for col, (label, path) in zip(ph_cols, photos):
-        with col:
-            st.caption(label)
-            if path and Path(path).exists():
-                st.image(path, use_container_width=True)
-            else:
-                st.markdown("사진 없음")
 
-    # 프로필 기본 정보
-    st.markdown(f"## {ch.display_label}")
-    st.markdown(f"**{class_name}**")
+    # ── 프로필 카드: 정면(크게) + 측면 2장(작게) + 기본 정보 ──────────────
+    col_front, col_sides, col_info = st.columns([3, 2, 5])
 
-    birth_str = ch.birth_date or "미등록"
-    age_str = _calc_age(ch.birth_date)
-    age_part = f"  ({age_str})" if age_str else ""
-    st.markdown(f"생년월일: {birth_str}{age_part}  |  성별: {_gender_label(ch.gender)}")
-    st.caption(f"가명 ID: {ch.pseudonym_id}")
+    with col_front:
+        st.caption("정면")
+        if ch.reference_photo_path and Path(ch.reference_photo_path).exists():
+            st.image(ch.reference_photo_path, use_container_width=True)
+        else:
+            st.markdown(
+                "<div style='height:180px;background:#f0f2f6;border-radius:8px;"
+                "display:flex;align-items:center;justify-content:center;"
+                "color:#aaa;font-size:13px'>사진 없음</div>",
+                unsafe_allow_html=True,
+            )
 
-    # 특이사항
-    st.divider()
-    if ch.notes and ch.notes.strip():
-        st.info(ch.notes)
-    else:
+    with col_sides:
+        st.caption("우측면")
+        if ch.photo_right_path and Path(ch.photo_right_path).exists():
+            st.image(ch.photo_right_path, use_container_width=True)
+        else:
+            st.markdown(
+                "<div style='height:84px;background:#f0f2f6;border-radius:6px;"
+                "display:flex;align-items:center;justify-content:center;"
+                "color:#aaa;font-size:12px'>없음</div>",
+                unsafe_allow_html=True,
+            )
+        st.caption("좌측면")
+        if ch.photo_left_path and Path(ch.photo_left_path).exists():
+            st.image(ch.photo_left_path, use_container_width=True)
+        else:
+            st.markdown(
+                "<div style='height:84px;background:#f0f2f6;border-radius:6px;"
+                "display:flex;align-items:center;justify-content:center;"
+                "color:#aaa;font-size:12px'>없음</div>",
+                unsafe_allow_html=True,
+            )
+
+    with col_info:
+        st.markdown(f"### {ch.display_label}")
+        st.markdown(f"**{class_name}**")
+        birth_str = ch.birth_date or "미등록"
+        age_str = _calc_age(ch.birth_date)
+        age_part = f" ({age_str})" if age_str else ""
+        st.markdown(f"📅 {birth_str}{age_part}")
+        st.markdown(f"성별: {_gender_label(ch.gender)}")
+        st.caption(f"가명 ID: {ch.pseudonym_id}")
+        if ch.notes and ch.notes.strip():
+            st.info(ch.notes, icon="📋")
+
+    # 특이사항 (사진이 없을 때만 별도 표시)
+    if not (ch.notes and ch.notes.strip()):
         st.caption("등록된 특이사항이 없습니다.")
 
     # 얼굴 매칭 동의
@@ -711,23 +730,23 @@ def render_edit_child() -> None:
                 "변경하지 않을 각도는 비워두세요."
             )
 
-            ph_status_cols = st.columns(3)
-            with ph_status_cols[0]:
-                st.caption("현재 정면 사진")
+            # 현재 사진 미리보기: 정면(크게) + 측면 2장(작게 세로)
+            pv_front, pv_sides, pv_pad = st.columns([3, 2, 3])
+            with pv_front:
+                st.caption("현재 정면")
                 if ch.reference_photo_path and Path(ch.reference_photo_path).exists():
-                    st.image(ch.reference_photo_path, width=80)
+                    st.image(ch.reference_photo_path, use_container_width=True)
                 else:
                     st.caption("없음")
-            with ph_status_cols[1]:
-                st.caption("현재 우측면 사진")
+            with pv_sides:
+                st.caption("우측면")
                 if ch.photo_right_path and Path(ch.photo_right_path).exists():
-                    st.image(ch.photo_right_path, width=80)
+                    st.image(ch.photo_right_path, use_container_width=True)
                 else:
                     st.caption("없음")
-            with ph_status_cols[2]:
-                st.caption("현재 좌측면 사진")
+                st.caption("좌측면")
                 if ch.photo_left_path and Path(ch.photo_left_path).exists():
-                    st.image(ch.photo_left_path, width=80)
+                    st.image(ch.photo_left_path, use_container_width=True)
                 else:
                     st.caption("없음")
 
