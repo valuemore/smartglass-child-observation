@@ -120,10 +120,9 @@ class GeminiVisionAdapter:
         model = genai.GenerativeModel(self._model_name)
         _req_opts = {"timeout": self._request_timeout_sec}
 
-        # 1. 클립 업로드
+        # 1. 클립 업로드 (request_options는 SDK 버전에 따라 미지원 — 별도 전달하지 않음)
         video_file = genai.upload_file(
             path=request.clip_path, mime_type="video/mp4",
-            request_options=_req_opts,
         )
         self._audit_events.append({
             "action": "gemini_clip_upload",
@@ -141,10 +140,13 @@ class GeminiVisionAdapter:
         try:
             # 3. 관찰 후보 생성
             prompt = self._build_prompt(request)
-            response = model.generate_content(
-                [video_file, prompt],
-                request_options=_req_opts,
-            )
+            try:
+                response = model.generate_content(
+                    [video_file, prompt],
+                    request_options=_req_opts,
+                )
+            except TypeError:
+                response = model.generate_content([video_file, prompt])
             raw_text: str = response.text
 
             logger.debug("Gemini 원시 응답 (앞 200자): %.200s", raw_text)
