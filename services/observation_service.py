@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from core.config import (
     DEFAULT_ACTOR,
@@ -113,6 +114,8 @@ def generate_observation_candidates_with_provider(
     from services.vision.provider_factory import get_vision_adapter
 
     adapter, provider_info = get_vision_adapter()
+    # 클립 기반 provider(gemini)는 근거 클립이 반드시 필요하다.
+    _clip_based = provider_info.get("provider") == "gemini"
 
     video = repo.get_video(video_id)
     if video is None:
@@ -122,11 +125,24 @@ def generate_observation_candidates_with_provider(
 
     all_scenes = repo.list_scenes(video_id)
     all_frames_flat = [f for s in all_scenes for f in repo.list_frames(s.id)]
+    _limit = max_scenes if max_scenes is not None else VISION_MAX_SCENES_PER_VIDEO
 
-    if VISION_SCENE_SELECTION_ENABLED:
+    if _clip_based:
+        # Gemini는 클립을 분석한다. 클립이 추출된 장면 집합과 프레임 기준 선택 장면이
+        # 불일치하면 clip_path=None 요청으로 전체 분석이 실패하므로,
+        # 유효한 클립이 있는 장면만 분석 대상으로 선정한다.
+        scenes = []
+        for scene in all_scenes:
+            cfs = repo.get_clips_for_scene(scene.id, video_id)
+            cp = cfs[0].local_clip_path if cfs else None
+            if cp and Path(cp).exists():
+                scenes.append(scene)
+            if len(scenes) >= _limit:
+                break
+    elif VISION_SCENE_SELECTION_ENABLED:
         scenes = select_scenes_for_analysis(
             all_scenes, all_frames_flat,
-            max_scenes=max_scenes if max_scenes is not None else VISION_MAX_SCENES_PER_VIDEO,
+            max_scenes=_limit,
             min_scene_duration=VISION_MIN_SCENE_DURATION_SEC,
         )
     else:
@@ -138,18 +154,25 @@ def generate_observation_candidates_with_provider(
 
     for scene in scenes:
         kept_frames = [f for f in repo.list_frames(scene.id) if f.kept]
-        if not kept_frames:
-            continue
+
+        # 사전 추출된 근거 클립이 있으면 clip_path 전달 (Gemini 어댑터 활용)
+        clips_for_scene = repo.get_clips_for_scene(scene.id, video_id)
+        clip_path = clips_for_scene[0].local_clip_path if clips_for_scene else None
+
+        if _clip_based:
+            # 클립 기반: 클립 없는 장면은 건너뛴다(안전망). 프레임은 없어도 무방.
+            if not (clip_path and Path(clip_path).exists()):
+                continue
+        else:
+            # 프레임 기반: kept 프레임 없으면 건너뛴다.
+            if not kept_frames:
+                continue
 
         total_frames += len(kept_frames)
         frame_refs = [
             FrameRef(frame_id=f.id, t=f.t, image_ref=f.image_path)
             for f in kept_frames
         ]
-        # 사전 추출된 근거 클립이 있으면 clip_path 전달 (Gemini 어댑터 활용)
-        clips_for_scene = repo.get_clips_for_scene(scene.id, video_id)
-        clip_path = clips_for_scene[0].local_clip_path if clips_for_scene else None
-
         request = SegmentAnalysisRequest(
             video_id=video_id,
             segment_id=scene.id,
