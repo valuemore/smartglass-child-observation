@@ -278,18 +278,40 @@ st.divider()
 if _role == "teacher":
     st.subheader("오늘 업로드한 영상 — 분석 상태")
     _my_videos = repo.list_videos(owner=get_current_actor())
-    if not _my_videos:
-        st.info("아직 업로드한 영상이 없습니다.")
-    else:
-        # 최근 업로드가 위로 오도록 역순
-        for v in reversed(_my_videos):
+    _any_analyzing = any(v.analysis_status in ("running", "queued") for v in _my_videos)
+
+    @st.fragment(run_every=5 if _any_analyzing else None)
+    def _render_analysis_dashboard() -> None:
+        my_videos = repo.list_videos(owner=get_current_actor())
+        if not my_videos:
+            st.info("아직 업로드한 영상이 없습니다.")
+            return
+        for v in reversed(my_videos):
             cand_n = len(repo.list_candidates(v.id))
             badge = _STATUS_BADGE.get(v.analysis_status, v.analysis_status)
             cols = st.columns([3, 2, 2, 2, 2])
             cols[0].markdown(f"**{v.filename}**  \n`{v.id}`")
             cols[1].markdown(f"촬영일\n\n{v.captured_date or '-'}")
             cols[2].markdown(f"상태\n\n{badge}")
-            cols[3].markdown(f"진행률\n\n{v.progress}%")
+            _pct = v.progress or 0
+            with cols[3]:
+                st.caption("진행률")
+                st.progress(_pct / 100)
+                if v.analysis_status == "done":
+                    st.markdown(
+                        f'<span style="color:#21A45D;font-size:0.8rem">✅ {_pct}%</span>',
+                        unsafe_allow_html=True,
+                    )
+                elif v.analysis_status == "failed":
+                    st.markdown(
+                        f'<span style="color:#E53935;font-size:0.8rem">❌ {_pct}%</span>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<span style="color:#1565C0;font-size:0.8rem">🔄 {_pct}%</span>',
+                        unsafe_allow_html=True,
+                    )
             cols[4].markdown(f"관찰 후보\n\n{cand_n}개")
             if v.analysis_status == "failed":
                 st.caption(f"⚠️ 실패 사유: {v.last_error or '알 수 없음'} (재시도 {v.retry_count}회)")
@@ -303,52 +325,54 @@ if _role == "teacher":
             st.divider()
         st.caption(
             "교사는 매일 개별 후보를 검토하지 않습니다. "
-            "‘수집 균형’에서 현황을 확인하고 1~2주 주기로 ‘주간 관찰초안’에서 확정하세요."
+            "'수집 균형'에서 현황을 확인하고 1~2주 주기로 '주간 관찰초안'에서 확정하세요."
         )
 
-        # ── 영상 삭제 (연구 종료 후 데이터 정리용) ──────────────────────────
-        if _my_videos:
-            st.divider()
-            with st.expander("🗑️ 영상 삭제 (연구 종료 후 데이터 정리용)", expanded=False):
-                st.warning(
-                    "삭제하면 원본 영상과 모든 파생 데이터(프레임·관찰 후보·확정 기록 등)가 **영구 삭제**됩니다. "
-                    "audit_log(접근·분석·삭제 이력)는 보존됩니다.",
-                    icon="⚠️",
-                )
-                _del_options = {f"{v.filename}  [{v.id}]": v.id for v in _my_videos}
-                _del_label = st.selectbox(
-                    "삭제할 영상을 선택하세요",
-                    options=list(_del_options.keys()),
-                    key="del_video_select",
-                )
-                _del_video_id = _del_options[_del_label]
-                _del_confirmed = st.checkbox(
-                    "원본 영상과 모든 파생 프레임·관찰 후보·확정 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
-                    key="del_confirm_check",
-                )
-                if st.button(
-                    "연구용 원본 영상 및 파생 프레임 삭제",
-                    disabled=not _del_confirmed,
-                    key="del_execute_btn",
-                    type="primary",
-                ):
-                    try:
-                        _del_result = delete_video_and_related_data(
-                            _del_video_id, repo,
-                            actor=get_current_actor(),
-                            videos_dir=VIDEOS_DIR,
-                            frames_dir=FRAMES_DIR,
-                        )
-                        st.success(
-                            f"삭제 완료. 감사 로그(action=delete)에 기록되었습니다. "
-                            f"(영상 파일 삭제: {_del_result['file_deleted']}, "
-                            f"프레임 폴더 삭제: {_del_result['frames_dir_deleted']}, "
-                            f"DB 행 삭제: {_del_result['db_rows_deleted']}건)",
-                            icon="✅",
-                        )
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(f"삭제 실패: {e}")
+    _render_analysis_dashboard()
+
+    # ── 영상 삭제 (연구 종료 후 데이터 정리용) ──────────────────────────
+    if _my_videos:
+        st.divider()
+        with st.expander("🗑️ 영상 삭제 (연구 종료 후 데이터 정리용)", expanded=False):
+            st.warning(
+                "삭제하면 원본 영상과 모든 파생 데이터(프레임·관찰 후보·확정 기록 등)가 **영구 삭제**됩니다. "
+                "audit_log(접근·분석·삭제 이력)는 보존됩니다.",
+                icon="⚠️",
+            )
+            _del_options = {f"{v.filename}  [{v.id}]": v.id for v in _my_videos}
+            _del_label = st.selectbox(
+                "삭제할 영상을 선택하세요",
+                options=list(_del_options.keys()),
+                key="del_video_select",
+            )
+            _del_video_id = _del_options[_del_label]
+            _del_confirmed = st.checkbox(
+                "원본 영상과 모든 파생 프레임·관찰 후보·확정 기록을 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
+                key="del_confirm_check",
+            )
+            if st.button(
+                "연구용 원본 영상 및 파생 프레임 삭제",
+                disabled=not _del_confirmed,
+                key="del_execute_btn",
+                type="primary",
+            ):
+                try:
+                    _del_result = delete_video_and_related_data(
+                        _del_video_id, repo,
+                        actor=get_current_actor(),
+                        videos_dir=VIDEOS_DIR,
+                        frames_dir=FRAMES_DIR,
+                    )
+                    st.success(
+                        f"삭제 완료. 감사 로그(action=delete)에 기록되었습니다. "
+                        f"(영상 파일 삭제: {_del_result['file_deleted']}, "
+                        f"프레임 폴더 삭제: {_del_result['frames_dir_deleted']}, "
+                        f"DB 행 삭제: {_del_result['db_rows_deleted']}건)",
+                        icon="✅",
+                    )
+                    st.rerun()
+                except ValueError as e:
+                    st.error(f"삭제 실패: {e}")
 
 # ===========================================================================
 # 연구자 모드: 수동 전처리 + AI 분석 (실호출 동의 게이트 포함)

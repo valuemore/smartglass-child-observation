@@ -13,7 +13,9 @@ import logging
 
 from core.config import (
     GEMINI_API_KEY,
+    GEMINI_MAX_RETRIES,
     GEMINI_MODEL,
+    GEMINI_REQUEST_TIMEOUT_SEC,
     VISION_API_KEY,
     VISION_DRY_RUN,
     VISION_MODEL,
@@ -152,7 +154,12 @@ def _try_build_gemini() -> tuple[VisionAdapter, dict]:
 
     model = GEMINI_MODEL or "gemini-1.5-flash"
     try:
-        adapter = GeminiVisionAdapter(api_key=GEMINI_API_KEY, model=model)
+        adapter = GeminiVisionAdapter(
+            api_key=GEMINI_API_KEY,
+            model=model,
+            request_timeout_sec=GEMINI_REQUEST_TIMEOUT_SEC,
+            max_retries=GEMINI_MAX_RETRIES,
+        )
     except Exception as e:
         reason = f"GeminiVisionAdapter 생성 실패({e}), mock으로 폴백합니다."
         logger.warning(reason)

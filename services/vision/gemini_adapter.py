@@ -63,9 +63,17 @@ class GeminiVisionAdapter:
     SegmentAnalysisRequest.clip_path에 사전 추출된 클립 경로가 있어야 한다.
     """
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-1.5-flash",
+        request_timeout_sec: float = 120.0,
+        max_retries: int = 2,
+    ) -> None:
         self._api_key = api_key
         self._model_name = model
+        self._request_timeout_sec = request_timeout_sec
+        self._max_retries = max_retries
         self._audit_events: list[dict] = []
 
     def analyze_segment(self, request: SegmentAnalysisRequest) -> SegmentAnalysisResult:
@@ -75,6 +83,31 @@ class GeminiVisionAdapter:
                 "클립 추출(clip_service.extract_clips)을 먼저 실행하세요."
             )
 
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                return self._analyze_segment_once(request)
+            except (OSError, ConnectionError, TimeoutError) as exc:
+                last_exc = exc
+                msg = str(exc)
+                if "110" in msg or "timed out" in msg.lower() or "timeout" in msg.lower():
+                    logger.warning(
+                        "Gemini API 연결 시간 초과 (시도 %d/%d): %s",
+                        attempt + 1, self._max_retries + 1, exc,
+                    )
+                    if attempt < self._max_retries:
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise ConnectionError(
+                        f"Gemini API 연결 시간 초과 — {self._max_retries + 1}회 시도 후 실패.\n"
+                        "서버에서 generativelanguage.googleapis.com:443 아웃바운드가 허용되어야 합니다.\n"
+                        f"원인: {exc}"
+                    ) from exc
+                raise
+        assert last_exc is not None
+        raise last_exc
+
+    def _analyze_segment_once(self, request: SegmentAnalysisRequest) -> SegmentAnalysisResult:
         try:
             import google.generativeai as genai  # type: ignore
         except ImportError as exc:
@@ -85,10 +118,12 @@ class GeminiVisionAdapter:
 
         genai.configure(api_key=self._api_key)
         model = genai.GenerativeModel(self._model_name)
+        _req_opts = {"timeout": self._request_timeout_sec}
 
         # 1. 클립 업로드
         video_file = genai.upload_file(
-            path=request.clip_path, mime_type="video/mp4"
+            path=request.clip_path, mime_type="video/mp4",
+            request_options=_req_opts,
         )
         self._audit_events.append({
             "action": "gemini_clip_upload",
@@ -106,7 +141,10 @@ class GeminiVisionAdapter:
         try:
             # 3. 관찰 후보 생성
             prompt = self._build_prompt(request)
-            response = model.generate_content([video_file, prompt])
+            response = model.generate_content(
+                [video_file, prompt],
+                request_options=_req_opts,
+            )
             raw_text: str = response.text
 
             logger.debug("Gemini 원시 응답 (앞 200자): %.200s", raw_text)

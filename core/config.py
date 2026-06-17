@@ -70,8 +70,10 @@ CLIP_MAX_TOTAL_DURATION_SEC = float(os.getenv("CLIP_MAX_TOTAL_DURATION_SEC", "60
 # ---------------------------------------------------------------------------
 # Gemini API 설정 — API 키는 절대 여기에 하드코딩하지 않는다 (.env 사용)
 # ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")          # 절대 하드코딩 금지
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_API_KEY             = os.getenv("GEMINI_API_KEY", "")          # 절대 하드코딩 금지
+GEMINI_MODEL               = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_REQUEST_TIMEOUT_SEC = float(os.getenv("GEMINI_REQUEST_TIMEOUT_SEC", "120.0"))
+GEMINI_MAX_RETRIES         = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
 
 # ---------------------------------------------------------------------------
 # 인증 설정 — 비밀번호는 .env에서 관리, 코드 하드코딩 금지
