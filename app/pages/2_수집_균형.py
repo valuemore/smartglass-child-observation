@@ -188,6 +188,34 @@ if status["shortage_notes"]:
 else:
     st.success("현재 기준에서 부족한 영역·유아가 없습니다. 균형 있게 수집되고 있습니다.", icon="✅")
 
+
+# ---------------------------------------------------------------------------
+# 유아별 중간 관찰 초안 (매칭으로 분류된 후보 기반)
+# ---------------------------------------------------------------------------
+if _class_id is not None:
+    st.subheader("유아별 중간 관찰 초안")
+    st.caption(
+        "AI 후보 · 교사 검토 전입니다. 매칭으로 분류된 관찰 후보를 누리영역별로 요약한 **중간 초안**이며, "
+        "최종 관찰기록은 ‘주간 관찰초안’에서 교사가 확정합니다. (점수·발달·평정을 산출하지 않습니다.)"
+    )
+    from services.draft_service import build_interim_drafts
+
+    _interim = build_interim_drafts(repo, _class_id, owner=_owner)
+    if not _interim:
+        st.info(
+            "아직 유아에 매칭된 관찰 후보가 없습니다. 위 ‘유아 매칭’에서 연결하면 "
+            "영역별 중간 관찰 초안이 여기에 표시됩니다.",
+            icon="📝",
+        )
+    else:
+        for _d in _interim:
+            with st.expander(f"🧒 {_d['label']} — 중간 관찰 초안 (근거 후보 {_d['total']}건)", expanded=False):
+                for _a in _d["areas"]:
+                    _beh = " / ".join(_a["behaviors"]) if _a["behaviors"] else "(행동 서술 없음)"
+                    st.markdown(
+                        f"**{_a['area']}** _(근거 {_a['count']}건)_  \n{_beh}"
+                    )
+
 st.divider()
 st.caption(
     "📌 이 화면은 수집량 현황입니다. 점수·발달·평정을 산출하지 않습니다. "

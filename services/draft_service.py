@@ -42,6 +42,60 @@ def _in_period(captured: Optional[str], start: str, end: str) -> bool:
     return start <= captured <= end
 
 
+def build_interim_drafts(
+    repo: SqliteRepository,
+    class_id: str,
+    owner: Optional[str] = None,
+) -> list[dict]:
+    """매칭된 후보를 유아·누리영역별로 묶어 **중간 관찰 초안**(미리보기)을 만든다.
+
+    수집균형 '보완 안내'에서 즉시 보여주기 위한 **읽기 전용** 함수.
+    DB에 저장하지 않고 감사 로그도 남기지 않는다(확정은 주간초안에서).
+
+    반환: [{"pseudonym_id", "label", "total", "areas": [{"area","behaviors","count"}]}]
+          유아 라벨 기준 정렬, 영역은 NURI_AREAS 순서.
+    """
+    children = {c.pseudonym_id: c for c in repo.list_children(class_id)}
+    videos = [v for v in repo.list_videos(owner=owner) if v.class_id == class_id]
+
+    # (pid, area) -> [cands]
+    groups: dict[tuple[str, str], list] = {}
+    for v in videos:
+        matches = {m.temp_child_id: m.pseudonym_id for m in repo.list_child_matches(v.id)}
+        for cand in repo.list_candidates(v.id):
+            pid = matches.get(cand.temp_child_id)
+            if pid is None:
+                continue
+            for area in _candidate_areas(cand, repo.list_mappings(cand.id)):
+                groups.setdefault((pid, area), []).append(cand)
+
+    by_child: dict[str, dict] = {}
+    for (pid, area), cands in groups.items():
+        ordered = sorted(cands, key=lambda c: c.confidence, reverse=True)
+        behaviors: list[str] = []
+        seen: set[str] = set()
+        for c in ordered:
+            b = c.observed_behavior.strip()
+            if b and b not in seen:
+                seen.add(b)
+                behaviors.append(b)
+            if len(behaviors) >= _MAX_BEHAVIORS:
+                break
+        entry = by_child.setdefault(pid, {
+            "pseudonym_id": pid,
+            "label": children[pid].display_label if pid in children else pid,
+            "total": 0,
+            "areas": [],
+        })
+        entry["total"] += len(cands)
+        entry["areas"].append({"area": area, "behaviors": behaviors, "count": len(cands)})
+
+    for entry in by_child.values():
+        entry["areas"].sort(key=lambda a: _AREA_IDX.get(a["area"], 9))
+
+    return sorted(by_child.values(), key=lambda e: e["label"])
+
+
 def generate_weekly_draft(
     repo: SqliteRepository,
     class_id: str,

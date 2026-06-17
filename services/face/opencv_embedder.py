@@ -101,6 +101,53 @@ class OpenCVFaceEmbedder:
         # feat: shape (1, 128) → 평탄화
         return [float(x) for x in feat.flatten().tolist()]
 
+    def detect_face_crops(
+        self, image_bytes: bytes, max_faces: int = 5, pad: float = 0.25,
+    ) -> list[bytes]:
+        """이미지에서 검출된 얼굴들을 패딩 포함 크롭해 JPEG bytes 목록으로 반환한다.
+
+        면적 내림차순 상위 max_faces개. 얼굴 미검출 시 빈 리스트.
+        매칭 화면에서 교사가 등록 사진과 비교하기 위한 시각 자료(로컬 전용).
+        """
+        cv2 = self._cv2
+        import numpy as np
+
+        if not image_bytes:
+            return []
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return []
+
+        h0, w0 = img.shape[:2]
+        scale = _MAX_DET_SIDE / max(h0, w0)
+        if scale < 1.0:
+            img = cv2.resize(img, (int(w0 * scale), int(h0 * scale)))
+
+        h, w = img.shape[:2]
+        self._detector.setInputSize((w, h))
+        self._detector.setScoreThreshold(0.7)  # 스냅샷은 약간 완화해 더 많이 보여줌
+        _retval, faces = self._detector.detect(img)
+        if faces is None or len(faces) == 0:
+            return []
+
+        ordered = sorted(faces, key=lambda f: float(f[2]) * float(f[3]), reverse=True)
+        crops: list[bytes] = []
+        for f in ordered[:max_faces]:
+            x, y, fw, fh = float(f[0]), float(f[1]), float(f[2]), float(f[3])
+            px, py = fw * pad, fh * pad
+            x1 = max(0, int(x - px))
+            y1 = max(0, int(y - py))
+            x2 = min(w, int(x + fw + px))
+            y2 = min(h, int(y + fh + py))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            face_img = img[y1:y2, x1:x2]
+            ok, buf = cv2.imencode(".jpg", face_img)
+            if ok:
+                crops.append(buf.tobytes())
+        return crops
+
 
 _singleton: Optional[OpenCVFaceEmbedder] = None
 

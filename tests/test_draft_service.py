@@ -8,7 +8,7 @@ import pytest
 from core.schemas import (
     ChildMatch, ClassGroup, Clip, NuriAreaCandidate, ObservationCandidate, Scene, Video,
 )
-from services.draft_service import generate_weekly_draft
+from services.draft_service import build_interim_drafts, generate_weekly_draft
 from storage.sqlite_repository import SqliteRepository
 
 
@@ -50,6 +50,42 @@ def _match(repo, vid, temp, pid):
         id=f"cm_{vid}_{temp}", video_id=vid, temp_child_id=temp, pseudonym_id=pid,
         matched_by="teacher_01", matched_at=datetime(2026, 6, 9, 11, 0, 0),
     ))
+
+
+# ---------------------------------------------------------------------------
+# 중간 관찰 초안(읽기 전용 미리보기)
+# ---------------------------------------------------------------------------
+
+def test_build_interim_drafts_matched(repo):
+    """매칭된 후보가 유아·영역별 중간 초안으로 묶이고 DB에 저장되지 않는다."""
+    from core.schemas import Child
+    _class(repo)
+    repo.add_child(Child(id="chd_1", class_id="cls_01", pseudonym_id="p_07",
+                         display_label="A", created_at=datetime(2026, 3, 1, 9, 0, 0)))
+    _video(repo, "vid_1")
+    _cand(repo, "c1", "vid_1", temp="child_A", area="자연탐구", behavior="블록을 쌓음")
+    _cand(repo, "c2", "vid_1", temp="child_A", area="사회관계", behavior="친구와 나눔")
+    _match(repo, "vid_1", "child_A", "p_07")
+
+    drafts = build_interim_drafts(repo, "cls_01", owner=None)
+    assert len(drafts) == 1
+    d = drafts[0]
+    assert d["pseudonym_id"] == "p_07"
+    assert d["label"] == "A"
+    assert d["total"] == 2
+    areas = {a["area"] for a in d["areas"]}
+    assert areas == {"자연탐구", "사회관계"}
+    # 읽기 전용: 주간 초안이 저장되지 않았다
+    assert repo.list_weekly_drafts("cls_01") == []
+
+
+def test_build_interim_drafts_excludes_unmatched(repo):
+    """매칭되지 않은 후보는 중간 초안에서 제외된다."""
+    _class(repo)
+    _video(repo, "vid_1")
+    _cand(repo, "c1", "vid_1", temp="child_A", area="자연탐구")
+    # 매칭 없음
+    assert build_interim_drafts(repo, "cls_01", owner=None) == []
 
 
 # ---------------------------------------------------------------------------
