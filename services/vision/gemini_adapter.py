@@ -2,7 +2,8 @@
 
 원칙:
 - 원본 영상 전체는 전송하지 않는다. 사전 추출된 근거 클립(clip_path)만 전송한다.
-- Gemini Files API로 클립 업로드 → 분석 → 즉시 삭제.
+- Gemini generateContent에 근거 클립을 인라인(video/mp4)으로 전송해 분석한다.
+  (Files API는 $discovery 경로가 일부 키 형식을 거부하므로 사용하지 않는다.)
 - 업로드·삭제 이벤트를 _audit_events에 기록 (observation_service가 flush).
 - 클립이 없으면 ValueError 발생 — 클립 추출을 먼저 실행해야 함.
 - API 키는 절대 로그에 출력하지 않는다.
@@ -57,16 +58,21 @@ _JSON_SCHEMA_EXAMPLE = """{
 }"""
 
 
+# 인라인 영상 전송 한도. generateContent 요청 총량은 20MB 미만이어야 하므로 여유를 둔다.
+_MAX_INLINE_BYTES = 18 * 1024 * 1024
+
+
 class GeminiVisionAdapter:
-    """Gemini Files API를 통해 동영상 클립 구간을 분석한다.
+    """Gemini generateContent(인라인 영상)로 동영상 클립 구간을 분석한다.
 
     SegmentAnalysisRequest.clip_path에 사전 추출된 클립 경로가 있어야 한다.
+    사전 추출된 근거 클립만 인라인 전송하며, 원본 영상 전체는 전송하지 않는다.
     """
 
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
         request_timeout_sec: float = 120.0,
         max_retries: int = 2,
     ) -> None:
@@ -120,62 +126,44 @@ class GeminiVisionAdapter:
         model = genai.GenerativeModel(self._model_name)
         _req_opts = {"timeout": self._request_timeout_sec}
 
-        # 1. 클립 업로드 (request_options는 SDK 버전에 따라 미지원 — 별도 전달하지 않음)
-        video_file = genai.upload_file(
-            path=request.clip_path, mime_type="video/mp4",
-        )
+        # 1. 클립 바이트를 인라인으로 전송한다.
+        #    Files API(upload_file)는 $discovery 경로가 일부 키 형식(AQ.*)을 거부하므로 사용하지 않는다.
+        #    원본 영상 전체가 아니라 사전 추출된 근거 클립만 전송한다(보안 원칙 유지).
+        clip_bytes = Path(request.clip_path).read_bytes()
+        if len(clip_bytes) > _MAX_INLINE_BYTES:
+            raise ValueError(
+                f"클립 크기({len(clip_bytes) / (1024*1024):.1f}MB)가 인라인 전송 한도"
+                f"({_MAX_INLINE_BYTES / (1024*1024):.0f}MB)를 초과합니다. "
+                "클립 길이·해상도를 줄이세요."
+            )
         self._audit_events.append({
-            "action": "gemini_clip_upload",
-            "detail": f"clip_path={request.clip_path} file_name={video_file.name}",
+            "action": "gemini_clip_inline",
+            "detail": f"clip_path={request.clip_path} bytes={len(clip_bytes)}",
             "video_id": request.video_id,
         })
         logger.info(
-            "Gemini Files API 업로드 완료: %s → %s",
-            request.clip_path, video_file.name,
+            "Gemini 인라인 클립 전송: %s (%d bytes)",
+            request.clip_path, len(clip_bytes),
         )
 
-        # 2. ACTIVE 상태 대기 (최대 120초)
-        self._wait_active(genai, video_file, timeout_sec=120)
-
+        # 2. 관찰 후보 생성
+        prompt = self._build_prompt(request)
+        content = [{"mime_type": "video/mp4", "data": clip_bytes}, prompt]
         try:
-            # 3. 관찰 후보 생성
-            prompt = self._build_prompt(request)
-            try:
-                response = model.generate_content(
-                    [video_file, prompt],
-                    request_options=_req_opts,
-                )
-            except TypeError:
-                response = model.generate_content([video_file, prompt])
-            raw_text: str = response.text
+            response = model.generate_content(content, request_options=_req_opts)
+        except TypeError:
+            response = model.generate_content(content)
+        raw_text: str = response.text
 
-            logger.debug("Gemini 원시 응답 (앞 200자): %.200s", raw_text)
+        logger.debug("Gemini 원시 응답 (앞 200자): %.200s", raw_text)
 
-            # 4. 즉시 삭제
-            video_file.delete()
-            self._audit_events.append({
-                "action": "gemini_clip_delete",
-                "detail": f"file_name={video_file.name}",
-                "video_id": request.video_id,
-            })
-            logger.info("Gemini Files API 삭제 완료: %s", video_file.name)
-
-        except Exception:
-            # 실패해도 업로드 파일 삭제 시도
-            try:
-                video_file.delete()
-                self._audit_events.append({
-                    "action": "gemini_clip_delete",
-                    "detail": f"file_name={video_file.name} reason=error_cleanup",
-                    "video_id": request.video_id,
-                })
-            except Exception as del_err:
-                logger.warning("Gemini 파일 삭제 실패: %s", del_err)
-            raise
-
-        # 5. 응답 파싱 (기존 response_parser 재사용)
+        # 3. 응답 파싱 (기존 response_parser 재사용). ParseResult → SegmentAnalysisResult 언래핑.
         cleaned = _extract_json(raw_text)
-        return parse_external_response(cleaned, request)
+        parse_result = parse_external_response(cleaned, request)
+        if parse_result.warnings:
+            for w in parse_result.warnings:
+                logger.warning("응답 파서 경고 [%s]: %s", request.segment_id, w)
+        return parse_result.result
 
     def _build_prompt(self, request: SegmentAnalysisRequest) -> str:
         return (
@@ -192,22 +180,6 @@ class GeminiVisionAdapter:
             f"## 출력 JSON 형식 (이 형식만 허용)\n{_JSON_SCHEMA_EXAMPLE}\n\n"
             "관찰 가능한 유아 행동이 없으면 `{\"observations\": []}` 를 반환하세요."
         )
-
-    @staticmethod
-    def _wait_active(genai_module, video_file, timeout_sec: float = 120) -> None:
-        """파일이 ACTIVE 상태가 될 때까지 poll한다."""
-        elapsed = 0.0
-        interval = 3.0
-        while video_file.state.name == "PROCESSING":
-            if elapsed >= timeout_sec:
-                raise TimeoutError(
-                    f"Gemini 파일 처리 대기 시간 초과 ({timeout_sec}초): {video_file.name}"
-                )
-            time.sleep(interval)
-            elapsed += interval
-            video_file = genai_module.get_file(video_file.name)
-        if video_file.state.name == "FAILED":
-            raise RuntimeError(f"Gemini 파일 처리 실패: {video_file.name}")
 
 
 def _extract_json(text: str) -> str:

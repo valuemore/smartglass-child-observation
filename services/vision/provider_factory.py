@@ -152,7 +152,7 @@ def _try_build_gemini() -> tuple[VisionAdapter, dict]:
         logger.warning(reason)
         return _mock_adapter(fallback_reason=reason)
 
-    model = GEMINI_MODEL or "gemini-1.5-flash"
+    model = GEMINI_MODEL or "gemini-2.5-flash"
     try:
         adapter = GeminiVisionAdapter(
             api_key=GEMINI_API_KEY,
